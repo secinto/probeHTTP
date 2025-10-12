@@ -1,0 +1,12 @@
+# Sample URLs for testing
+https://example.com
+https://github.com
+http://google.com
+
+# Test URL without scheme
+example.org
+
+# Empty lines and comments should be ignored
+
+# More URLs
+https://httpbin.org/status/200

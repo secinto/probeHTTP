@@ -1,0 +1,8 @@
+secinto.com
+www.secinto.com
+group-cts.com
+http://www.orf.at
+https://www.orf.at:443
+https://www.github.com
+http://www.orf.at
+https://www.example.com

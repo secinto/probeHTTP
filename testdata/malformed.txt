@@ -1,0 +1,5 @@
+# Invalid URLs for error testing
+htp://invalid-scheme.com
+://missing-scheme.com
+http://
+not a url at all

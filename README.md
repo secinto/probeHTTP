@@ -263,4 +263,3 @@ Output: 8 URLs (2 schemes × 4 common ports each)
 - Batch URL availability checking
 - Performance monitoring via response times
 - Integration with other security tools and workflows
-# probeHTTP
