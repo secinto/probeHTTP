@@ -160,8 +160,21 @@ func init() {
 	flag.StringVar(&config.CustomPorts, "ports", "", "Custom port list (comma-separated, supports ranges like 8000-8010)")
 }
 
+// hasPipedData checks if there is data being piped to stdin
+func hasPipedData() bool {
+	stat, _ := os.Stdin.Stat()
+	return (stat.Mode() & os.ModeCharDevice) == 0
+}
+
 func main() {
 	flag.Parse()
+
+	// If no arguments provided and nothing is piped to stdin, show help
+	if flag.NFlag() == 0 && config.InputFile == "" && !hasPipedData() {
+		flag.Usage()
+		os.Exit(0)
+	}
+
 
 	// Validate mutually exclusive flags
 	if config.UserAgent != "" && config.RandomUserAgent {
