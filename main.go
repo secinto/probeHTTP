@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -68,20 +69,21 @@ var UserAgentPool = []string{
 
 // Config holds the CLI configuration
 type Config struct {
-	InputFile       string
-	OutputFile      string
-	FollowRedirects bool
-	MaxRedirects    int
-	Timeout         int
-	Concurrency     int
-	Silent          bool
-	Debug           bool   // Debug mode (show all requests and responses)
-	SameHostOnly    bool   // Only follow redirects to same hostname
-	UserAgent       string // Custom User-Agent header
-	RandomUserAgent bool   // Use random User-Agent from pool
-	AllSchemes      bool   // Test both HTTP and HTTPS schemes
-	IgnorePorts     bool   // Ignore input ports and test common ports
-	CustomPorts     string // Custom port list (comma-separated, supports ranges)
+	InputFile          string
+	OutputFile         string
+	FollowRedirects    bool
+	MaxRedirects       int
+	Timeout            int
+	Concurrency        int
+	Silent             bool
+	Debug              bool   // Debug mode (show all requests and responses)
+	SameHostOnly       bool   // Only follow redirects to same hostname
+	UserAgent          string // Custom User-Agent header
+	RandomUserAgent    bool   // Use random User-Agent from pool
+	AllSchemes         bool   // Test both HTTP and HTTPS schemes
+	IgnorePorts        bool   // Ignore input ports and test common ports
+	CustomPorts        string // Custom port list (comma-separated, supports ranges)
+	InsecureSkipVerify bool   // Skip TLS certificate verification
 }
 
 // Hash contains MMH3 hashes
@@ -158,6 +160,8 @@ func init() {
 	flag.BoolVar(&config.IgnorePorts, "ignore-ports", false, "Ignore input ports and test common HTTP/HTTPS ports")
 	flag.StringVar(&config.CustomPorts, "p", "", "Custom port list (comma-separated, supports ranges like 8000-8010)")
 	flag.StringVar(&config.CustomPorts, "ports", "", "Custom port list (comma-separated, supports ranges like 8000-8010)")
+	flag.BoolVar(&config.InsecureSkipVerify, "k", false, "Skip TLS certificate verification (insecure)")
+	flag.BoolVar(&config.InsecureSkipVerify, "insecure", false, "Skip TLS certificate verification (insecure)")
 }
 
 // hasPipedData checks if there is data being piped to stdin
@@ -230,6 +234,12 @@ func main() {
 
 	// Write results
 	for result := range results {
+		// Skip results with errors - they should not be in JSON output
+		// (errors are already logged to stderr in probeURL if not in silent mode)
+		if result.Error != "" {
+			continue
+		}
+
 		jsonData, err := json.Marshal(result)
 		if err != nil {
 			if !config.Silent {
@@ -307,6 +317,16 @@ func worker(urls <-chan string, results chan<- ProbeResult, originalInputMap map
 func createHTTPClient() *http.Client {
 	client := &http.Client{
 		Timeout: time.Duration(config.Timeout) * time.Second,
+	}
+
+	// Configure TLS certificate verification if needed
+	if config.InsecureSkipVerify {
+		transport := &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		}
+		client.Transport = transport
 	}
 
 	// Always disable automatic redirects - we'll handle them manually to capture the chain
