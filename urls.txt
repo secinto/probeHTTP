@@ -6,3 +6,5 @@ https://www.orf.at:443
 https://www.github.com
 http://www.orf.at
 https://www.example.com
+http://csi.apg.at/
+https://login-test.apg.at/
