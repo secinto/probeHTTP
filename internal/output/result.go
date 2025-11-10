@@ -1,0 +1,30 @@
+package output
+
+import (
+	"probeHTTP/internal/hash"
+)
+
+// ProbeResult represents the JSON output for each probed URL
+type ProbeResult struct {
+	Timestamp        string   `json:"timestamp"`
+	Hash             hash.Hash `json:"hash"`
+	Port             string   `json:"port"`
+	URL              string   `json:"url"`
+	Input            string   `json:"input"`
+	FinalURL         string   `json:"final_url"`
+	Title            string   `json:"title"`
+	Scheme           string   `json:"scheme"`
+	WebServer        string   `json:"webserver"`
+	ContentType      string   `json:"content_type"`
+	Method           string   `json:"method"`
+	Host             string   `json:"host"`
+	Path             string   `json:"path"`
+	Time             string   `json:"time"`
+	ChainStatusCodes []int    `json:"chain_status_codes"`
+	ChainHosts       []string `json:"chain_hosts"`
+	Words            int      `json:"words"`
+	Lines            int      `json:"lines"`
+	StatusCode       int      `json:"status_code"`
+	ContentLength    int      `json:"content_length"`
+	Error            string   `json:"error,omitempty"`
+}
