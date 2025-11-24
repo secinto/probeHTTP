@@ -27,6 +27,7 @@ type Config struct {
 	AllowPrivateIPs    bool // NEW: Allow scanning private IPs
 	MaxBodySize        int64 // NEW: Maximum response body size in bytes
 	MaxRetries         int   // NEW: Maximum number of retries
+	TLSHandshakeTimeout int  // NEW: Timeout for TLS handshake attempts in seconds
 	Logger             *slog.Logger // NEW: Structured logger
 }
 
@@ -36,7 +37,7 @@ func New() *Config {
 		FollowRedirects:    true,
 		MaxRedirects:       10,
 		Timeout:            30,
-		Concurrency:        10,
+		Concurrency:        20,
 		Silent:             false,
 		Debug:              false,
 		SameHostOnly:       false,
@@ -47,6 +48,7 @@ func New() *Config {
 		AllowPrivateIPs:    false,
 		MaxBodySize:        10 * 1024 * 1024, // 10 MB default
 		MaxRetries:         0,                // No retries by default
+		TLSHandshakeTimeout: 10,              // 10 seconds default
 	}
 }
 
@@ -64,8 +66,8 @@ func ParseFlags() (*Config, error) {
 	flag.IntVar(&cfg.MaxRedirects, "max-redirects", 10, "Max redirects")
 	flag.IntVar(&cfg.Timeout, "t", 30, "Request timeout in seconds")
 	flag.IntVar(&cfg.Timeout, "timeout", 30, "Request timeout in seconds")
-	flag.IntVar(&cfg.Concurrency, "c", 10, "Concurrent requests")
-	flag.IntVar(&cfg.Concurrency, "concurrency", 10, "Concurrent requests")
+	flag.IntVar(&cfg.Concurrency, "c", 20, "Concurrent requests")
+	flag.IntVar(&cfg.Concurrency, "concurrency", 20, "Concurrent requests")
 	flag.BoolVar(&cfg.Silent, "silent", false, "Silent mode (no errors to stderr)")
 	flag.BoolVar(&cfg.Debug, "d", false, "Debug mode (show all requests and responses to stderr)")
 	flag.BoolVar(&cfg.Debug, "debug", false, "Debug mode (show all requests and responses to stderr)")
@@ -85,6 +87,8 @@ func ParseFlags() (*Config, error) {
 	flag.BoolVar(&cfg.InsecureSkipVerify, "insecure", false, "Skip TLS certificate verification")
 	flag.BoolVar(&cfg.AllowPrivateIPs, "allow-private", false, "Allow scanning private IP addresses")
 	flag.IntVar(&cfg.MaxRetries, "retries", 0, "Maximum number of retries for failed requests")
+	flag.IntVar(&cfg.TLSHandshakeTimeout, "tls-timeout", 10, "Timeout for TLS handshake attempts in seconds")
+	flag.IntVar(&cfg.TLSHandshakeTimeout, "tls-handshake-timeout", 10, "Timeout for TLS handshake attempts in seconds")
 
 	flag.Parse()
 

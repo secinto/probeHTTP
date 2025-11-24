@@ -3,6 +3,7 @@ package probe
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,6 +85,35 @@ func (p *Prober) ProbeURL(ctx context.Context, probeURL string, originalInput st
 
 // probeURLOnce performs a single HTTP probe attempt
 func (p *Prober) probeURLOnce(ctx context.Context, probeURL string, originalInput string) output.ProbeResult {
+	// Ensure URL has scheme
+	if !strings.HasPrefix(probeURL, "http://") && !strings.HasPrefix(probeURL, "https://") {
+		probeURL = "http://" + probeURL
+	}
+
+	// Parse URL to validate and extract scheme
+	parsedURL, err := url.Parse(probeURL)
+	if err != nil {
+		result := output.ProbeResult{
+			Timestamp: time.Now().Format(time.RFC3339),
+			Input:     originalInput,
+			Method:    "GET",
+			Error:     fmt.Sprintf("Invalid URL: %v", err),
+		}
+		p.logError("failed to parse URL", "url", probeURL, "error", err)
+		return result
+	}
+
+	// For HTTPS URLs, use parallel TLS attempts
+	if parsedURL.Scheme == "https" {
+		return p.probeURLWithParallelTLS(ctx, probeURL, originalInput)
+	}
+
+	// For HTTP URLs, use the standard probe method
+	return p.probeURLHTTP(ctx, probeURL, originalInput)
+}
+
+// probeURLHTTP performs a standard HTTP probe (no TLS)
+func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInput string) output.ProbeResult {
 	// Create debug buffer for collecting all debug output for this URL
 	var debugBuf strings.Builder
 
@@ -91,11 +121,7 @@ func (p *Prober) probeURLOnce(ctx context.Context, probeURL string, originalInpu
 		Timestamp: time.Now().Format(time.RFC3339),
 		Input:     originalInput,
 		Method:    "GET",
-	}
-
-	// Ensure URL has scheme
-	if !strings.HasPrefix(probeURL, "http://") && !strings.HasPrefix(probeURL, "https://") {
-		probeURL = "http://" + probeURL
+		Protocol:  "HTTP/1.1",
 	}
 
 	// Parse URL to validate and extract hostname
@@ -277,6 +303,392 @@ func (p *Prober) probeURLOnce(ctx context.Context, probeURL string, originalInpu
 	)
 
 	return result
+}
+
+// probeURLWithParallelTLS performs parallel TLS attempts for HTTPS URLs
+func (p *Prober) probeURLWithParallelTLS(ctx context.Context, probeURL string, originalInput string) output.ProbeResult {
+	// Extract hostname for rate limiting
+	parsedURL, err := url.Parse(probeURL)
+	if err != nil {
+		return output.ProbeResult{
+			Timestamp: time.Now().Format(time.RFC3339),
+			Input:     originalInput,
+			Method:    "GET",
+			Error:     fmt.Sprintf("Invalid URL: %v", err),
+		}
+	}
+
+	hostname := parsedURL.Hostname()
+	limiter := p.client.GetLimiter(hostname)
+	if err := limiter.Wait(ctx); err != nil {
+		return output.ProbeResult{
+			Timestamp: time.Now().Format(time.RFC3339),
+			Input:     originalInput,
+			Method:    "GET",
+			Error:     fmt.Sprintf("Rate limit wait cancelled: %v", err),
+		}
+	}
+
+	// Get TLS strategies
+	batch1, batch2 := GetTLSStrategies()
+
+	// Try Batch 1 in parallel
+	result := p.tryTLSBatch(ctx, probeURL, originalInput, batch1, []string{"HTTP/3", "HTTP/2", "HTTP/1.1"})
+	if result.Error == "" {
+		return result
+	}
+
+	// All Batch 1 failed, try Batch 2 in parallel
+	return p.tryTLSBatch(ctx, probeURL, originalInput, batch2, []string{"HTTP/1.1", "HTTP/1.1"})
+}
+
+// tryTLSBatch tries a batch of TLS strategies in parallel
+func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput string, strategies []TLSStrategy, protocols []string) output.ProbeResult {
+	// Create context with TLS timeout
+	tlsCtx, cancel := context.WithTimeout(ctx, time.Duration(p.config.TLSHandshakeTimeout)*time.Second)
+	defer cancel()
+
+	// Create result channel
+	results := make(chan output.ProbeResult, len(strategies))
+	var wg sync.WaitGroup
+
+	// Launch parallel attempts
+	for i, strategy := range strategies {
+		protocol := "HTTP/1.1"
+		if i < len(protocols) {
+			protocol = protocols[i]
+		}
+
+		wg.Add(1)
+		go func(s TLSStrategy, proto string) {
+			defer wg.Done()
+			results <- p.probeURLWithConfig(tlsCtx, probeURL, originalInput, s, proto)
+		}(strategy, protocol)
+	}
+
+	// Close results channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect first successful result
+	var firstSuccess output.ProbeResult
+	var allErrors []string
+	successFound := false
+
+	for result := range results {
+		if result.Error == "" && !successFound {
+			firstSuccess = result
+			successFound = true
+			cancel() // Cancel remaining attempts
+		} else if result.Error != "" {
+			allErrors = append(allErrors, result.Error)
+		}
+	}
+
+	if successFound {
+		return firstSuccess
+	}
+
+	// All attempts failed
+	return output.ProbeResult{
+		Timestamp: time.Now().Format(time.RFC3339),
+		Input:     originalInput,
+		Method:    "GET",
+		Error:     fmt.Sprintf("All TLS attempts failed: %s", strings.Join(allErrors, "; ")),
+	}
+}
+
+// probeURLWithConfig performs a single probe attempt with a specific TLS config and protocol
+func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, originalInput string, strategy TLSStrategy, protocol string) output.ProbeResult {
+	var debugBuf strings.Builder
+
+	result := output.ProbeResult{
+		Timestamp:        time.Now().Format(time.RFC3339),
+		Input:            originalInput,
+		Method:           "GET",
+		Protocol:         protocol,
+		TLSConfigStrategy: strategy.Name,
+	}
+
+	// Build TLS config
+	tlsConfig := BuildTLSConfig(strategy, p.config)
+
+	// Create appropriate client based on protocol
+	var httpClient *http.Client
+	switch protocol {
+	case "HTTP/3":
+		httpClient = NewHTTP3Client(p.config, tlsConfig)
+	case "HTTP/2":
+		httpClient = NewHTTP2Client(p.config, tlsConfig)
+	default: // HTTP/1.1
+		httpClient = NewHTTP11Client(p.config, tlsConfig)
+	}
+
+	// Parse URL
+	parsedURL, err := url.Parse(probeURL)
+	if err != nil {
+		result.Error = fmt.Sprintf("Invalid URL: %v", err)
+		return result
+	}
+
+	// Debug: print separator at start of probe
+	p.debugPrintSeparator(&debugBuf)
+
+	// Create HTTP request with context
+	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+	if err != nil {
+		result.Error = fmt.Sprintf("Failed to create request: %v", err)
+		p.flushDebugBuffer(&debugBuf)
+		return result
+	}
+
+	// Set browser-like headers
+	req.Header.Set("User-Agent", useragent.Get(p.config.UserAgent, p.config.RandomUserAgent))
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	// Debug: log initial request
+	p.debugRequest(req, 1, &debugBuf)
+
+	// Make HTTP request
+	startTime := time.Now()
+	resp, err := httpClient.Do(req)
+	elapsed := time.Since(startTime)
+
+	if err != nil {
+		result.Error = fmt.Sprintf("Request failed: %v", err)
+		p.flushDebugBuffer(&debugBuf)
+		return result
+	}
+	defer resp.Body.Close()
+
+	// Extract TLS connection state if available
+	if resp.TLS != nil {
+		result.TLSVersion = getTLSVersionString(resp.TLS.Version)
+		result.CipherSuite = tls.CipherSuiteName(resp.TLS.CipherSuite)
+	}
+
+	// Read response body
+	var bodyBuffer bytes.Buffer
+	var bodyReader io.Reader = resp.Body
+
+	if p.config.Debug {
+		bodyReader = io.TeeReader(resp.Body, &bodyBuffer)
+	}
+
+	limitedReader := io.LimitReader(bodyReader, p.config.MaxBodySize)
+	initialBody, err := io.ReadAll(limitedReader)
+
+	if err != nil {
+		result.Error = fmt.Sprintf("Error reading body: %v", err)
+		p.flushDebugBuffer(&debugBuf)
+		return result
+	}
+
+	// Check if body was truncated
+	if int64(len(initialBody)) >= p.config.MaxBodySize {
+		p.config.Logger.Warn("response body truncated",
+			"url", probeURL,
+			"max_size", p.config.MaxBodySize,
+		)
+	}
+
+	// Debug: log initial response
+	debugBody := initialBody
+	if p.config.Debug && bodyBuffer.Len() > 0 {
+		debugBody = bodyBuffer.Bytes()
+	}
+	p.debugResponse(resp, debugBody, elapsed, 1, &debugBuf)
+
+	// Extract initial hostname for redirect tracking
+	initialHostname := parsedURL.Hostname()
+
+	// Follow redirects manually if enabled
+	var finalResp *http.Response
+	var statusChain []int
+	var hostChain []string
+
+	if p.config.FollowRedirects && (resp.StatusCode >= 300 && resp.StatusCode < 400) {
+		// Recreate response body for redirect following
+		resp.Body = io.NopCloser(bytes.NewReader(initialBody))
+		finalResp, statusChain, hostChain, err = p.followRedirectsWithClient(ctx, resp, p.config.MaxRedirects, 1, initialHostname, &debugBuf, httpClient)
+		if err != nil {
+			result.Error = fmt.Sprintf("Redirect error: %v", err)
+			result.ChainStatusCodes = statusChain
+			result.ChainHosts = hostChain
+			p.flushDebugBuffer(&debugBuf)
+			return result
+		}
+		// Read final response body
+		finalResp.Body = io.NopCloser(io.LimitReader(finalResp.Body, p.config.MaxBodySize))
+		initialBody, _ = io.ReadAll(finalResp.Body)
+		finalResp.Body.Close()
+	} else {
+		finalResp = resp
+		statusChain = []int{resp.StatusCode}
+		hostChain = []string{initialHostname}
+	}
+
+	// Debug: print separator at end of probe
+	p.debugPrintSeparator(&debugBuf)
+
+	// Extract final URL after redirects
+	finalURL := finalResp.Request.URL.String()
+	finalParsedURL := finalResp.Request.URL
+
+	// Calculate hashes
+	result.Hash.BodyMMH3 = hash.CalculateMMH3(initialBody)
+	result.Hash.HeaderMMH3 = hash.CalculateHeaderMMH3(finalResp.Header)
+
+	// Extract metadata
+	result.URL = probeURL
+	result.FinalURL = finalURL
+	result.ChainStatusCodes = statusChain
+	result.ChainHosts = hostChain
+	result.StatusCode = finalResp.StatusCode
+	result.ContentLength = len(initialBody)
+	result.Time = elapsed.String()
+	result.WebServer = finalResp.Header.Get("Server")
+	result.ContentType = finalResp.Header.Get("Content-Type")
+
+	// Parse URL components
+	result.Scheme = finalParsedURL.Scheme
+	result.Host = finalParsedURL.Hostname()
+	result.Path = finalParsedURL.Path
+	if result.Path == "" {
+		result.Path = "/"
+	}
+
+	// Extract port
+	port := finalParsedURL.Port()
+	if port == "" {
+		if result.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	result.Port = port
+
+	// Extract title and count words/lines
+	bodyStr := string(initialBody)
+	result.Title = parser.ExtractTitle(bodyStr)
+	result.Words, result.Lines = parser.CountWordsAndLines(bodyStr)
+
+	// Flush debug buffer atomically to stderr
+	p.flushDebugBuffer(&debugBuf)
+
+	return result
+}
+
+// getTLSVersionString converts TLS version to string
+func getTLSVersionString(version uint16) string {
+	switch version {
+	case 0x0304:
+		return "1.3"
+	case 0x0303:
+		return "1.2"
+	case 0x0302:
+		return "1.1"
+	case 0x0301:
+		return "1.0"
+	default:
+		return fmt.Sprintf("0x%04x", version)
+	}
+}
+
+// followRedirectsWithClient follows redirects using a specific HTTP client
+func (p *Prober) followRedirectsWithClient(ctx context.Context, initialResp *http.Response, maxRedirects int, startStep int, initialHostname string, buf *strings.Builder, httpClient *http.Client) (*http.Response, []int, []string, error) {
+	statusChain := []int{initialResp.StatusCode}
+	hostChain := []string{initialHostname}
+	currentResp := initialResp
+
+	if currentResp.StatusCode < 300 || currentResp.StatusCode >= 400 {
+		return currentResp, statusChain, hostChain, nil
+	}
+
+	redirectCount := 0
+	stepNum := startStep
+	for {
+		select {
+		case <-ctx.Done():
+			return currentResp, statusChain, hostChain, ctx.Err()
+		default:
+		}
+
+		if redirectCount >= maxRedirects {
+			return currentResp, statusChain, hostChain, fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+
+		location := currentResp.Header.Get("Location")
+		if location == "" {
+			return currentResp, statusChain, hostChain, nil
+		}
+
+		currentResp.Body.Close()
+
+		nextURL, err := currentResp.Request.URL.Parse(location)
+		if err != nil {
+			return currentResp, statusChain, hostChain, fmt.Errorf("invalid redirect location: %v", err)
+		}
+
+		nextHostname := nextURL.Hostname()
+
+		if p.config.SameHostOnly && nextHostname != initialHostname {
+			if p.config.Debug {
+				warning := fmt.Sprintf("  ⚠ Cross-host redirect blocked: %s → %s (same-host-only mode)\n", initialHostname, nextHostname)
+				if buf != nil {
+					buf.WriteString(warning)
+				}
+			}
+			return currentResp, statusChain, hostChain, fmt.Errorf("cross-host redirect blocked: %s → %s", initialHostname, nextHostname)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", nextURL.String(), nil)
+		if err != nil {
+			return currentResp, statusChain, hostChain, fmt.Errorf("failed to create redirect request: %v", err)
+		}
+
+		req.Header = currentResp.Request.Header
+
+		stepNum++
+		p.debugRequest(req, stepNum, buf)
+		if p.config.Debug && nextHostname != initialHostname {
+			warning := fmt.Sprintf("  ⚠ Cross-host redirect: %s → %s\n", initialHostname, nextHostname)
+			if buf != nil {
+				buf.WriteString(warning)
+			}
+		}
+
+		requestStart := time.Now()
+		nextResp, err := httpClient.Do(req)
+		requestElapsed := time.Since(requestStart)
+		if err != nil {
+			return currentResp, statusChain, hostChain, fmt.Errorf("redirect request failed: %v", err)
+		}
+
+		var nextBody []byte
+		if p.config.Debug {
+			var bodyBuffer bytes.Buffer
+			bodyReader := io.TeeReader(nextResp.Body, &bodyBuffer)
+			nextBody, _ = io.ReadAll(io.LimitReader(bodyReader, p.config.MaxBodySize))
+			nextResp.Body.Close()
+			nextResp.Body = io.NopCloser(bytes.NewReader(nextBody))
+		}
+
+		p.debugResponse(nextResp, nextBody, requestElapsed, stepNum, buf)
+
+		statusChain = append(statusChain, nextResp.StatusCode)
+		hostChain = append(hostChain, nextHostname)
+		currentResp = nextResp
+		redirectCount++
+
+		if nextResp.StatusCode < 300 || nextResp.StatusCode >= 400 {
+			return nextResp, statusChain, hostChain, nil
+		}
+	}
 }
 
 // Helper methods for debugging

@@ -26,5 +26,9 @@ type ProbeResult struct {
 	Lines            int      `json:"lines"`
 	StatusCode       int      `json:"status_code"`
 	ContentLength    int      `json:"content_length"`
+	TLSVersion       string   `json:"tls_version,omitempty"`
+	CipherSuite      string   `json:"cipher_suite,omitempty"`
+	Protocol         string   `json:"protocol,omitempty"`
+	TLSConfigStrategy string  `json:"tls_config_strategy,omitempty"`
 	Error            string   `json:"error,omitempty"`
 }

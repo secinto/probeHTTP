@@ -248,3 +248,39 @@ func buildProbeURL(scheme string, host string, port string, path string, include
 	}
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }
+
+// NormalizeURL normalizes a URL by removing default ports to create a canonical form
+// This allows deduplication of URLs like http://host and http://host:80
+func NormalizeURL(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return urlStr // Return original if parsing fails
+	}
+
+	// Remove default ports
+	if parsed.Port() == "80" && parsed.Scheme == "http" {
+		parsed.Host = parsed.Hostname()
+	}
+	if parsed.Port() == "443" && parsed.Scheme == "https" {
+		parsed.Host = parsed.Hostname()
+	}
+
+	return parsed.String()
+}
+
+// DeduplicateURLs removes duplicate URLs that resolve to the same endpoint
+// by normalizing URLs (removing default ports) before comparison
+func DeduplicateURLs(urls []string) []string {
+	seen := make(map[string]bool)
+	var deduplicated []string
+
+	for _, urlStr := range urls {
+		normalized := NormalizeURL(urlStr)
+		if !seen[normalized] {
+			seen[normalized] = true
+			deduplicated = append(deduplicated, urlStr)
+		}
+	}
+
+	return deduplicated
+}

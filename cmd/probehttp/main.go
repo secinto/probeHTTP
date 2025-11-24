@@ -96,6 +96,33 @@ func main() {
 
 	cfg.Logger.Info("expanded URLs", "count", len(expandedURLs))
 
+	// Deduplicate URLs that resolve to the same endpoint
+	// (e.g., http://host and http://host:80 are the same)
+	beforeDedup := len(expandedURLs)
+	expandedURLs = parser.DeduplicateURLs(expandedURLs)
+	afterDedup := len(expandedURLs)
+	if beforeDedup != afterDedup {
+		cfg.Logger.Info("deduplicated URLs", "before", beforeDedup, "after", afterDedup)
+		// Rebuild originalInputMap for deduplicated URLs
+		// If a URL was deduplicated, keep the mapping from the first occurrence
+		newOriginalInputMap := make(map[string]string)
+		for _, urlStr := range expandedURLs {
+			if originalInput, exists := originalInputMap[urlStr]; exists {
+				newOriginalInputMap[urlStr] = originalInput
+			} else {
+				// Check if a normalized version exists
+				normalized := parser.NormalizeURL(urlStr)
+				for origURL, origInput := range originalInputMap {
+					if parser.NormalizeURL(origURL) == normalized {
+						newOriginalInputMap[urlStr] = origInput
+						break
+					}
+				}
+			}
+		}
+		originalInputMap = newOriginalInputMap
+	}
+
 	// Create prober
 	prober := probe.NewProber(cfg)
 
