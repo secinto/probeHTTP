@@ -174,6 +174,19 @@ func ExpandURLs(inputURL string, allSchemes bool, ignorePorts bool, customPorts 
 
 // getSchemesToTest returns the list of schemes to test based on configuration and input
 func getSchemesToTest(parsed ParsedURL, allSchemes bool) []string {
+	// If port 443 is specified, force HTTPS (port 443 is HTTPS-only)
+	if parsed.Port == "443" {
+		return []string{"https"}
+	}
+
+	// If port 80 is specified, prefer HTTP (but still test HTTPS if allSchemes is set)
+	if parsed.Port == "80" {
+		if allSchemes {
+			return []string{"http", "https"}
+		}
+		return []string{"http"}
+	}
+
 	// If AllSchemes flag is set, always test both
 	if allSchemes {
 		return []string{"http", "https"}

@@ -92,6 +92,8 @@ echo -e "https://example.com\nhttps://github.com" | ./probeHTTP
 | `--allow-private` | | Allow scanning private IP addresses | false |
 | `--retries` | | Maximum number of retries for failed requests | 0 |
 | `--tls-timeout` | | Timeout for TLS handshake attempts in seconds | 10 |
+| `--disable-http3` | | Disable HTTP/3 (QUIC) support | false |
+| `--debug-log` | | Write detailed debug logs to file | - |
 
 ### Examples
 
@@ -327,6 +329,36 @@ HTTP/3 uses UDP instead of TCP and provides better performance on high-latency n
 - Fewer servers support HTTP/3 compared to HTTP/2 and HTTP/1.1
 - Automatically falls back to HTTP/2 or HTTP/1.1 if HTTP/3 fails
 
+#### UDP Buffer Size Warning
+
+If you see a warning about UDP buffer sizes:
+```
+failed to sufficiently increase receive buffer size (was: 208 kiB, wanted: 7168 kiB, got: 416 kiB)
+```
+
+This is a system-level limitation that can affect HTTP/3 performance. To fix it:
+
+**Linux:**
+```bash
+# Increase UDP buffer size (requires root)
+sudo sysctl -w net.core.rmem_max=8388608
+sudo sysctl -w net.core.rmem_default=8388608
+```
+
+**macOS:**
+```bash
+# Increase UDP buffer size (requires root)
+sudo sysctl -w kern.ipc.maxsockbuf=8388608
+```
+
+**Disable HTTP/3:**
+If you don't want to deal with UDP buffer size configuration, you can disable HTTP/3:
+```bash
+./probeHTTP --disable-http3 -i urls.txt
+```
+
+This will skip HTTP/3 attempts and only try HTTP/2 and HTTP/1.1.
+
 ### Examples
 
 ```bash
@@ -338,6 +370,15 @@ echo "https://example.com" | ./probeHTTP --tls-timeout 5
 
 # View TLS metadata in output
 echo "https://example.com" | ./probeHTTP | jq '.tls_version, .protocol, .cipher_suite'
+
+# Enable detailed debug logging to file
+./probeHTTP -i urls.txt --debug-log debug.log
+
+# Debug logging shows:
+# - Which TLS strategies are being tried
+# - Which protocols (HTTP/3, HTTP/2, HTTP/1.1) are attempted
+# - Detailed error messages for each failed attempt
+# - TLS connection details when successful
 ```
 
 ## Dependencies

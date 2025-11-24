@@ -105,10 +105,16 @@ func (p *Prober) probeURLOnce(ctx context.Context, probeURL string, originalInpu
 
 	// For HTTPS URLs, use parallel TLS attempts
 	if parsedURL.Scheme == "https" {
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Info("probing HTTPS URL with parallel TLS", "url", probeURL)
+		}
 		return p.probeURLWithParallelTLS(ctx, probeURL, originalInput)
 	}
 
 	// For HTTP URLs, use the standard probe method
+	if p.config.DebugLogger != nil {
+		p.config.DebugLogger.Info("probing HTTP URL", "url", probeURL)
+	}
 	return p.probeURLHTTP(ctx, probeURL, originalInput)
 }
 
@@ -124,11 +130,18 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		Protocol:  "HTTP/1.1",
 	}
 
+	if p.config.DebugLogger != nil {
+		p.config.DebugLogger.Info("probing HTTP URL", "url", probeURL)
+	}
+
 	// Parse URL to validate and extract hostname
 	parsedURL, err := url.Parse(probeURL)
 	if err != nil {
 		result.Error = fmt.Sprintf("Invalid URL: %v", err)
 		p.logError("failed to parse URL", "url", probeURL, "error", err)
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Error("failed to parse URL", "url", probeURL, "error", err)
+		}
 		p.flushDebugBuffer(&debugBuf)
 		return result
 	}
@@ -140,6 +153,9 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	limiter := p.client.GetLimiter(hostname)
 	if err := limiter.Wait(ctx); err != nil {
 		result.Error = fmt.Sprintf("Rate limit wait cancelled: %v", err)
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Warn("rate limit wait cancelled", "url", probeURL, "error", err)
+		}
 		p.flushDebugBuffer(&debugBuf)
 		return result
 	}
@@ -172,9 +188,24 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	if err != nil {
 		result.Error = fmt.Sprintf("Request failed: %v", err)
 		p.logError("request failed", "url", probeURL, "error", err)
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Error("HTTP request failed",
+				"url", probeURL,
+				"error", err,
+				"duration", elapsed,
+			)
+		}
 		p.debugPrintSeparator(&debugBuf)
 		p.flushDebugBuffer(&debugBuf)
 		return result
+	}
+
+	if p.config.DebugLogger != nil {
+		p.config.DebugLogger.Info("HTTP request succeeded",
+			"url", probeURL,
+			"status_code", resp.StatusCode,
+			"duration", elapsed,
+		)
 	}
 
 	// PERFORMANCE FIX: Use TeeReader for single-pass body reading in debug mode
@@ -332,8 +363,17 @@ func (p *Prober) probeURLWithParallelTLS(ctx context.Context, probeURL string, o
 	// Get TLS strategies
 	batch1, batch2 := GetTLSStrategies()
 
+	// Determine protocols for Batch 1 based on HTTP/3 setting
+	var batch1Protocols []string
+	if p.config.DisableHTTP3 {
+		// Skip HTTP/3, try TLS 1.3 with HTTP/2 instead
+		batch1Protocols = []string{"HTTP/2", "HTTP/2", "HTTP/1.1"}
+	} else {
+		batch1Protocols = []string{"HTTP/3", "HTTP/2", "HTTP/1.1"}
+	}
+
 	// Try Batch 1 in parallel
-	result := p.tryTLSBatch(ctx, probeURL, originalInput, batch1, []string{"HTTP/3", "HTTP/2", "HTTP/1.1"})
+	result := p.tryTLSBatch(ctx, probeURL, originalInput, batch1, batch1Protocols)
 	if result.Error == "" {
 		return result
 	}
@@ -348,6 +388,14 @@ func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput
 	tlsCtx, cancel := context.WithTimeout(ctx, time.Duration(p.config.TLSHandshakeTimeout)*time.Second)
 	defer cancel()
 
+	if p.config.DebugLogger != nil {
+		p.config.DebugLogger.Info("starting TLS batch",
+			"url", probeURL,
+			"batch_size", len(strategies),
+			"timeout_seconds", p.config.TLSHandshakeTimeout,
+		)
+	}
+
 	// Create result channel
 	results := make(chan output.ProbeResult, len(strategies))
 	var wg sync.WaitGroup
@@ -357,6 +405,15 @@ func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput
 		protocol := "HTTP/1.1"
 		if i < len(protocols) {
 			protocol = protocols[i]
+		}
+
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Debug("launching parallel attempt",
+				"url", probeURL,
+				"strategy", strategy.Name,
+				"protocol", protocol,
+				"attempt", i+1,
+			)
 		}
 
 		wg.Add(1)
@@ -392,11 +449,19 @@ func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput
 	}
 
 	// All attempts failed
+	errorMsg := fmt.Sprintf("All TLS attempts failed: %s", strings.Join(allErrors, "; "))
+	if p.config.DebugLogger != nil {
+		p.config.DebugLogger.Error("all TLS attempts failed",
+			"url", probeURL,
+			"attempts", len(strategies),
+			"errors", allErrors,
+		)
+	}
 	return output.ProbeResult{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Input:     originalInput,
 		Method:    "GET",
-		Error:     fmt.Sprintf("All TLS attempts failed: %s", strings.Join(allErrors, "; ")),
+		Error:     errorMsg,
 	}
 }
 
@@ -412,6 +477,17 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		TLSConfigStrategy: strategy.Name,
 	}
 
+	// Log attempt to debug file if enabled
+	if p.config.DebugLogger != nil {
+		p.config.DebugLogger.Debug("attempting TLS connection",
+			"url", probeURL,
+			"strategy", strategy.Name,
+			"protocol", protocol,
+			"tls_min_version", strategy.MinVersion,
+			"tls_max_version", strategy.MaxVersion,
+		)
+	}
+
 	// Build TLS config
 	tlsConfig := BuildTLSConfig(strategy, p.config)
 
@@ -420,16 +496,28 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 	switch protocol {
 	case "HTTP/3":
 		httpClient = NewHTTP3Client(p.config, tlsConfig)
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Debug("created HTTP/3 client", "url", probeURL)
+		}
 	case "HTTP/2":
 		httpClient = NewHTTP2Client(p.config, tlsConfig)
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Debug("created HTTP/2 client", "url", probeURL)
+		}
 	default: // HTTP/1.1
 		httpClient = NewHTTP11Client(p.config, tlsConfig)
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Debug("created HTTP/1.1 client", "url", probeURL)
+		}
 	}
 
 	// Parse URL
 	parsedURL, err := url.Parse(probeURL)
 	if err != nil {
 		result.Error = fmt.Sprintf("Invalid URL: %v", err)
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Error("failed to parse URL", "url", probeURL, "error", err)
+		}
 		return result
 	}
 
@@ -458,9 +546,35 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 	elapsed := time.Since(startTime)
 
 	if err != nil {
-		result.Error = fmt.Sprintf("Request failed: %v", err)
+		errorMsg := fmt.Sprintf("Request failed: %v", err)
+		result.Error = errorMsg
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Error("request failed",
+				"url", probeURL,
+				"strategy", strategy.Name,
+				"protocol", protocol,
+				"error", err,
+				"duration", elapsed,
+			)
+		}
 		p.flushDebugBuffer(&debugBuf)
 		return result
+	}
+
+	if p.config.DebugLogger != nil {
+		p.config.DebugLogger.Info("request succeeded",
+			"url", probeURL,
+			"strategy", strategy.Name,
+			"protocol", protocol,
+			"status_code", resp.StatusCode,
+			"duration", elapsed,
+		)
+		if resp.TLS != nil {
+			p.config.DebugLogger.Debug("TLS connection details",
+				"tls_version", getTLSVersionString(resp.TLS.Version),
+				"cipher_suite", tls.CipherSuiteName(resp.TLS.CipherSuite),
+			)
+		}
 	}
 	defer resp.Body.Close()
 

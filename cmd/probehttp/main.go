@@ -88,6 +88,13 @@ func main() {
 		}
 
 		expanded := parser.ExpandURLs(inputURL, cfg.AllSchemes, cfg.IgnorePorts, cfg.CustomPorts)
+		if cfg.DebugLogger != nil {
+			cfg.DebugLogger.Info("expanded URL",
+				"input", inputURL,
+				"expanded_count", len(expanded),
+				"expanded_urls", expanded,
+			)
+		}
 		for _, expandedURL := range expanded {
 			expandedURLs = append(expandedURLs, expandedURL)
 			originalInputMap[expandedURL] = inputURL
