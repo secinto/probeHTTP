@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"probeHTTP/internal/config"
 	"probeHTTP/internal/output"
 	"probeHTTP/internal/probe"
 )

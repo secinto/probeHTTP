@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"probeHTTP/internal/config"
@@ -11,7 +13,12 @@ import (
 
 // resetConfig resets the global config to default values for testing
 func resetConfig() *config.Config {
-	return config.New()
+	cfg := config.New()
+	// Initialize logger for tests (use a no-op handler for silent mode)
+	cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelError, // Only show errors in tests
+	}))
+	return cfg
 }
 
 // createTestServer creates a test HTTP server with custom handlers
