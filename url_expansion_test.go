@@ -630,7 +630,7 @@ func TestExpandURLs(t *testing.T) {
 			allSchemes:  false,
 			ignorePorts: false,
 			customPorts: "80,443,8080",
-			wantCount:   6, // 2 schemes × 3 ports
+			wantCount:   6, // 2 schemes × 3 ports (including invalid combinations)
 			wantContain: []string{
 				"http://example.com:80/",
 				"http://example.com:443/",

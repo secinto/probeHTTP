@@ -41,6 +41,7 @@ func NewClient(cfg *config.Config) *Client {
 		IdleConnTimeout:     90 * time.Second,
 		DisableKeepAlives:   false,
 		TLSClientConfig:     tlsConfig,
+		TLSHandshakeTimeout: 10 * time.Second,
 		// Enable compression
 		DisableCompression: false,
 	}
