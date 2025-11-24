@@ -1,15 +1,22 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"probeHTTP/internal/config"
+	"probeHTTP/internal/output"
+	"probeHTTP/internal/probe"
 )
 
 // createInputMap creates a simple mapping where expanded URL equals original input (for tests)
@@ -23,20 +30,22 @@ func createInputMapForSystem(urls []string) map[string]string {
 
 // TestEndToEnd_StdinStdout tests reading from stdin and writing to stdout
 func TestEndToEnd_StdinStdout(t *testing.T) {
-	resetConfig()
+	cfg := resetConfig()
 
 	server := createTestServer(simpleHTMLHandler)
 	defer server.Close()
 
 	// Simulate stdin with server URL
 	input := server.URL + "\n"
-	var output bytes.Buffer
+	var outputBuf bytes.Buffer
 
 	// Process URLs
 	inputReader := strings.NewReader(input)
 	urls := readURLs(inputReader)
 
-	results := processURLs(urls, createInputMapForSystem(urls), 1)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	results := prober.ProcessURLs(ctx, urls, createInputMapForSystem(urls), 1)
 
 	// Collect and verify results
 	count := 0
@@ -46,11 +55,11 @@ func TestEndToEnd_StdinStdout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to marshal result: %v", err)
 		}
-		output.Write(jsonData)
-		output.WriteString("\n")
+		outputBuf.Write(jsonData)
+		outputBuf.WriteString("\n")
 
 		// Verify result is valid JSON
-		var decoded ProbeResult
+		var decoded output.ProbeResult
 		if err := json.Unmarshal(jsonData, &decoded); err != nil {
 			t.Errorf("invalid JSON output: %v", err)
 		}
@@ -68,7 +77,7 @@ func TestEndToEnd_StdinStdout(t *testing.T) {
 		t.Errorf("expected 1 result, got %d", count)
 	}
 
-	if output.Len() == 0 {
+	if outputBuf.Len() == 0 {
 		t.Error("expected non-empty output")
 	}
 }
@@ -105,7 +114,10 @@ func TestEndToEnd_FileIO(t *testing.T) {
 	}
 
 	// Process URLs
-	results := processURLs(urls, createInputMapForSystem(urls), 2)
+	cfg := resetConfig()
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	results := prober.ProcessURLs(ctx, urls, createInputMapForSystem(urls), 2)
 
 	// Write results to output file
 	outFile, err := os.Create(outputFile)
@@ -153,7 +165,7 @@ func TestEndToEnd_FileIO(t *testing.T) {
 
 	// Verify each line is valid JSON
 	for i, line := range lines {
-		var result ProbeResult
+		var result output.ProbeResult
 		if err := json.Unmarshal([]byte(line), &result); err != nil {
 			t.Errorf("line %d: invalid JSON: %v", i+1, err)
 		}
@@ -162,7 +174,7 @@ func TestEndToEnd_FileIO(t *testing.T) {
 
 // TestEndToEnd_MultipleURLs tests processing multiple URLs concurrently
 func TestEndToEnd_MultipleURLs(t *testing.T) {
-	resetConfig()
+	cfg := resetConfig()
 
 	// Create multiple test servers
 	server1 := createTestServer(simpleHTMLHandler)
@@ -180,7 +192,9 @@ func TestEndToEnd_MultipleURLs(t *testing.T) {
 
 	urls := []string{server1.URL, server2.URL, server3.URL}
 
-	results := processURLs(urls, createInputMapForSystem(urls), 3)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	results := prober.ProcessURLs(ctx, urls, createInputMapForSystem(urls), 3)
 
 	statusCodes := make(map[int]int)
 	count := 0
@@ -237,7 +251,10 @@ func TestEndToEnd_CommentsAndEmptyLines(t *testing.T) {
 		t.Errorf("expected 2 URLs after filtering, got %d", len(urls))
 	}
 
-	results := processURLs(urls, createInputMapForSystem(urls), 1)
+	cfg := resetConfig()
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	results := prober.ProcessURLs(ctx, urls, createInputMapForSystem(urls), 1)
 
 	count := 0
 	for range results {
@@ -251,8 +268,8 @@ func TestEndToEnd_CommentsAndEmptyLines(t *testing.T) {
 
 // TestEndToEnd_InvalidURLs tests handling of invalid URLs
 func TestEndToEnd_InvalidURLs(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	invalidURLs := []string{
 		"htp://invalid.com",
@@ -260,7 +277,9 @@ func TestEndToEnd_InvalidURLs(t *testing.T) {
 		"not a url",
 	}
 
-	results := processURLs(invalidURLs, createInputMapForSystem(invalidURLs), 2)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	results := prober.ProcessURLs(ctx, invalidURLs, createInputMapForSystem(invalidURLs), 2)
 
 	count := 0
 	errorCount := 0
@@ -285,13 +304,15 @@ func TestEndToEnd_InvalidURLs(t *testing.T) {
 
 // TestEndToEnd_JSONOutput tests that output is valid JSON
 func TestEndToEnd_JSONOutput(t *testing.T) {
-	resetConfig()
+	cfg := resetConfig()
 
 	server := createTestServer(simpleHTMLHandler)
 	defer server.Close()
 
 	urls := []string{server.URL}
-	results := processURLs(urls, createInputMapForSystem(urls), 1)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	results := prober.ProcessURLs(ctx, urls, createInputMapForSystem(urls), 1)
 
 	for result := range results {
 		// Marshal to JSON
@@ -301,7 +322,7 @@ func TestEndToEnd_JSONOutput(t *testing.T) {
 		}
 
 		// Verify we can unmarshal it back
-		var decoded ProbeResult
+		var decoded output.ProbeResult
 		if err := json.Unmarshal(jsonData, &decoded); err != nil {
 			t.Fatalf("failed to unmarshal JSON: %v", err)
 		}
@@ -335,7 +356,10 @@ func TestEndToEnd_ConcurrentProcessing(t *testing.T) {
 
 	for _, concurrency := range concurrencyLevels {
 		t.Run(fmt.Sprintf("concurrency_%d", concurrency), func(t *testing.T) {
-			results := processURLs(urls, createInputMapForSystem(urls), concurrency)
+			cfg := resetConfig()
+			prober := probe.NewProber(cfg)
+			ctx := context.Background()
+			results := prober.ProcessURLs(ctx, urls, createInputMapForSystem(urls), concurrency)
 
 			count := 0
 			for range results {
@@ -424,15 +448,15 @@ func TestBinary_BasicExecution(t *testing.T) {
 
 	// Run binary with echo piped to stdin
 	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo '%s' | ./probeHTTP -silent", server.URL))
-	output, err := cmd.Output()
+	outputBytes, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("binary execution failed: %v", err)
 	}
 
 	// Verify output is valid JSON
-	var result ProbeResult
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Errorf("binary output is not valid JSON: %v\nOutput: %s", err, string(output))
+	var result output.ProbeResult
+	if err := json.Unmarshal(outputBytes, &result); err != nil {
+		t.Errorf("binary output is not valid JSON: %v\nOutput: %s", err, string(outputBytes))
 	}
 
 	// Verify basic fields
@@ -482,7 +506,7 @@ func TestBinary_FileInputOutput(t *testing.T) {
 	}
 
 	// Verify it's valid JSON
-	var result ProbeResult
+	var result output.ProbeResult
 	if err := json.Unmarshal(bytes.TrimSpace(content), &result); err != nil {
 		t.Errorf("output is not valid JSON: %v", err)
 	}
