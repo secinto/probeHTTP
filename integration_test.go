@@ -1,23 +1,29 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"probeHTTP/internal/config"
+	"probeHTTP/internal/output"
+	"probeHTTP/internal/probe"
 )
 
 // TestProbeURL_Success tests successful HTTP requests
 func TestProbeURL_Success(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	server := createTestServer(simpleHTMLHandler)
 	defer server.Close()
 
-	client := createHTTPClient()
-	result := probeURL(server.URL, server.URL, client)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, server.URL, server.URL)
 
 	// Verify no error
 	if result.Error != "" {
@@ -62,8 +68,8 @@ func TestProbeURL_Success(t *testing.T) {
 
 // TestProbeURL_StatusCodes tests various HTTP status codes
 func TestProbeURL_StatusCodes(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	tests := []struct {
 		name       string
@@ -82,8 +88,9 @@ func TestProbeURL_StatusCodes(t *testing.T) {
 			server := createTestServer(statusCodeHandler(tt.statusCode))
 			defer server.Close()
 
-			client := createHTTPClient()
-			result := probeURL(server.URL, server.URL, client)
+			prober := probe.NewProber(cfg)
+			ctx := context.Background()
+			result := prober.ProbeURL(ctx, server.URL, server.URL)
 
 			assertIntEqual(t, result.StatusCode, tt.statusCode, "status code")
 		})
@@ -92,9 +99,9 @@ func TestProbeURL_StatusCodes(t *testing.T) {
 
 // TestProbeURL_Redirects tests redirect handling
 func TestProbeURL_Redirects(t *testing.T) {
-	resetConfig()
-	config.FollowRedirects = true
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.FollowRedirects = true
+	cfg.Silent = true
 
 	// Create final destination server
 	finalServer := createTestServer(simpleHTMLHandler)
@@ -104,8 +111,9 @@ func TestProbeURL_Redirects(t *testing.T) {
 	redirectServer := createTestServer(redirectHandler(finalServer.URL))
 	defer redirectServer.Close()
 
-	client := createHTTPClient()
-	result := probeURL(redirectServer.URL, redirectServer.URL, client)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, redirectServer.URL, redirectServer.URL)
 
 	// Should follow redirect to final server
 	assertStringEqual(t, result.URL, redirectServer.URL, "URL field should be original probe URL")
@@ -125,9 +133,9 @@ func TestProbeURL_Redirects(t *testing.T) {
 
 // TestProbeURL_NoFollowRedirects tests redirect handling when disabled
 func TestProbeURL_NoFollowRedirects(t *testing.T) {
-	resetConfig()
-	config.FollowRedirects = false
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.FollowRedirects = false
+	cfg.Silent = true
 
 	// Create final destination server
 	finalServer := createTestServer(simpleHTMLHandler)
@@ -137,8 +145,9 @@ func TestProbeURL_NoFollowRedirects(t *testing.T) {
 	redirectServer := createTestServer(redirectHandler(finalServer.URL))
 	defer redirectServer.Close()
 
-	client := createHTTPClient()
-	result := probeURL(redirectServer.URL, redirectServer.URL, client)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, redirectServer.URL, redirectServer.URL)
 
 	// Should not follow redirect
 	assertStringEqual(t, result.URL, redirectServer.URL, "should stay at redirect URL")
@@ -156,10 +165,10 @@ func TestProbeURL_NoFollowRedirects(t *testing.T) {
 
 // TestProbeURL_MaxRedirects tests maximum redirect limit
 func TestProbeURL_MaxRedirects(t *testing.T) {
-	resetConfig()
-	config.FollowRedirects = true
-	config.MaxRedirects = 3
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.FollowRedirects = true
+	cfg.MaxRedirects = 3
+	cfg.Silent = true
 
 	// Create a chain of redirects longer than max
 	finalServer := createTestServer(simpleHTMLHandler)
@@ -168,8 +177,9 @@ func TestProbeURL_MaxRedirects(t *testing.T) {
 	redirectServer := createTestServer(multiRedirectHandler(5, simpleHTMLHandler))
 	defer redirectServer.Close()
 
-	client := createHTTPClient()
-	result := probeURL(redirectServer.URL, redirectServer.URL, client)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, redirectServer.URL, redirectServer.URL)
 
 	// Should fail due to too many redirects
 	if result.Error == "" {
@@ -182,9 +192,9 @@ func TestProbeURL_MaxRedirects(t *testing.T) {
 
 // TestProbeURL_Timeout tests request timeout
 func TestProbeURL_Timeout(t *testing.T) {
-	resetConfig()
-	config.Timeout = 1 // 1 second timeout
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Timeout = 1 // 1 second timeout
+	cfg.Silent = true
 
 	// Create server that delays longer than timeout
 	server := createTestServer(func(w http.ResponseWriter, r *http.Request) {
@@ -193,8 +203,9 @@ func TestProbeURL_Timeout(t *testing.T) {
 	})
 	defer server.Close()
 
-	client := createHTTPClient()
-	result := probeURL(server.URL, server.URL, client)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, server.URL, server.URL)
 
 	// Should timeout
 	if result.Error == "" {
@@ -207,8 +218,8 @@ func TestProbeURL_Timeout(t *testing.T) {
 
 // TestProbeURL_InvalidURL tests invalid URL handling
 func TestProbeURL_InvalidURL(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	tests := []struct {
 		name string
@@ -221,8 +232,9 @@ func TestProbeURL_InvalidURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := createHTTPClient()
-			result := probeURL(tt.url, tt.url, client)
+			prober := probe.NewProber(cfg)
+			ctx := context.Background()
+			result := prober.ProbeURL(ctx, tt.url, tt.url)
 
 			// Should have an error
 			if result.Error == "" {
@@ -234,8 +246,8 @@ func TestProbeURL_InvalidURL(t *testing.T) {
 
 // TestProbeURL_URLWithoutScheme tests URL scheme defaulting
 func TestProbeURL_URLWithoutScheme(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	server := createTestServer(simpleHTMLHandler)
 	defer server.Close()
@@ -244,8 +256,9 @@ func TestProbeURL_URLWithoutScheme(t *testing.T) {
 	serverURL := server.URL
 	host := strings.TrimPrefix(serverURL, "http://")
 
-	client := createHTTPClient()
-	result := probeURL(host, host, client)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, host, host)
 
 	// Should add http:// scheme and succeed
 	assertStringEqual(t, result.Input, host, "input should be preserved")
@@ -254,8 +267,8 @@ func TestProbeURL_URLWithoutScheme(t *testing.T) {
 
 // TestProbeURL_ContentAnalysis tests content extraction and analysis
 func TestProbeURL_ContentAnalysis(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	// Create server with specific content
 	server := createTestServer(func(w http.ResponseWriter, r *http.Request) {
@@ -275,8 +288,9 @@ func TestProbeURL_ContentAnalysis(t *testing.T) {
 	})
 	defer server.Close()
 
-	client := createHTTPClient()
-	result := probeURL(server.URL, server.URL, client)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, server.URL, server.URL)
 
 	// Verify title
 	assertStringEqual(t, result.Title, "Content Analysis Test", "title")
@@ -304,17 +318,18 @@ func TestProbeURL_ContentAnalysis(t *testing.T) {
 
 // TestProbeURL_HashConsistency tests that hashes are consistent
 func TestProbeURL_HashConsistency(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	server := createTestServer(simpleHTMLHandler)
 	defer server.Close()
 
-	client := createHTTPClient()
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
 
 	// Probe same URL twice
-	result1 := probeURL(server.URL, server.URL, client)
-	result2 := probeURL(server.URL, server.URL, client)
+	result1 := prober.ProbeURL(ctx, server.URL, server.URL)
+	result2 := prober.ProbeURL(ctx, server.URL, server.URL)
 
 	// Hashes should be identical for same content
 	assertStringEqual(t, result1.Hash.BodyMMH3, result2.Hash.BodyMMH3, "body hash consistency")
@@ -323,8 +338,8 @@ func TestProbeURL_HashConsistency(t *testing.T) {
 
 // TestProbeURL_PortExtraction tests port extraction from URLs
 func TestProbeURL_PortExtraction(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	tests := []struct {
 		name         string
@@ -343,8 +358,9 @@ func TestProbeURL_PortExtraction(t *testing.T) {
 			server := createTestServer(tt.setupHandler)
 			defer server.Close()
 
-			client := createHTTPClient()
-			result := probeURL(server.URL, server.URL, client)
+			prober := probe.NewProber(cfg)
+			ctx := context.Background()
+			result := prober.ProbeURL(ctx, server.URL, server.URL)
 
 			// Port should be extracted from server URL
 			assertNotEmpty(t, result.Port, "port")
@@ -354,8 +370,8 @@ func TestProbeURL_PortExtraction(t *testing.T) {
 
 // TestProbeURL_PathExtraction tests path extraction from URLs
 func TestProbeURL_PathExtraction(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	server := createTestServer(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -375,9 +391,10 @@ func TestProbeURL_PathExtraction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := createHTTPClient()
+			prober := probe.NewProber(cfg)
+			ctx := context.Background()
 			url := server.URL + tt.path
-			result := probeURL(url, url, client)
+			result := prober.ProbeURL(ctx, url, url)
 
 			assertStringEqual(t, result.Path, tt.wantPath, "path")
 		})
@@ -386,14 +403,15 @@ func TestProbeURL_PathExtraction(t *testing.T) {
 
 // TestProbeURL_HostExtraction tests host extraction from URLs
 func TestProbeURL_HostExtraction(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	server := createTestServer(simpleHTMLHandler)
 	defer server.Close()
 
-	client := createHTTPClient()
-	result := probeURL(server.URL, server.URL, client)
+	prober := probe.NewProber(cfg)
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, server.URL, server.URL)
 
 	// Host should be localhost or 127.0.0.1 from test server
 	if result.Host != "127.0.0.1" && result.Host != "localhost" && !strings.HasPrefix(result.Host, "127.0.0.1") {
@@ -404,14 +422,14 @@ func TestProbeURL_HostExtraction(t *testing.T) {
 
 // TestWorker tests the worker function
 func TestWorker(t *testing.T) {
-	resetConfig()
-	config.Silent = true
+	cfg := resetConfig()
+	cfg.Silent = true
 
 	server := createTestServer(simpleHTMLHandler)
 	defer server.Close()
 
 	urlChan := make(chan string, 2)
-	resultsChan := make(chan ProbeResult, 2)
+	resultsChan := make(chan output.ProbeResult, 2)
 
 	// Send URLs to worker
 	urlChan <- server.URL
@@ -422,9 +440,10 @@ func TestWorker(t *testing.T) {
 	// We'll manually track completion
 	done := make(chan bool)
 	go func() {
-		client := createHTTPClient()
+		prober := probe.NewProber(cfg)
+		ctx := context.Background()
 		for url := range urlChan {
-			result := probeURL(url, url, client)
+			result := prober.ProbeURL(ctx, url, url)
 			resultsChan <- result
 		}
 		done <- true

@@ -5,19 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"probeHTTP/internal/config"
 )
 
 // resetConfig resets the global config to default values for testing
-func resetConfig() {
-	config = Config{
-		InputFile:       "",
-		OutputFile:      "",
-		FollowRedirects: true,
-		MaxRedirects:    10,
-		Timeout:         30,
-		Concurrency:     10,
-		Silent:          false,
-	}
+func resetConfig() *config.Config {
+	return config.New()
 }
 
 // createTestServer creates a test HTTP server with custom handlers
