@@ -3,7 +3,10 @@ package main
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
+
+	"probeHTTP/internal/parser"
 )
 
 // TestParsePortList tests the parsePortList function
@@ -138,7 +141,7 @@ func TestParsePortList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parsePortList(tt.input)
+			got, err := parser.ParsePortList(tt.input)
 
 			if tt.wantError {
 				if err == nil {
@@ -168,12 +171,12 @@ func TestParseInputURL(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
-		want  ParsedURL
+		want  parser.ParsedURL
 	}{
 		{
 			name:  "full URL with HTTPS",
 			input: "https://example.com:443/path/to/resource",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "https://example.com:443/path/to/resource",
 				Scheme:   "https",
 				Host:     "example.com",
@@ -184,7 +187,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "full URL with HTTP",
 			input: "http://example.com:80/api",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "http://example.com:80/api",
 				Scheme:   "http",
 				Host:     "example.com",
@@ -195,7 +198,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "hostname only",
 			input: "example.com",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "example.com",
 				Scheme:   "",
 				Host:     "example.com",
@@ -206,7 +209,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "hostname with port",
 			input: "example.com:8080",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "example.com:8080",
 				Scheme:   "",
 				Host:     "example.com",
@@ -217,7 +220,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "URL with scheme no port",
 			input: "https://example.com",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "https://example.com",
 				Scheme:   "https",
 				Host:     "example.com",
@@ -228,7 +231,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "URL with scheme and path",
 			input: "http://example.com/test",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "http://example.com/test",
 				Scheme:   "http",
 				Host:     "example.com",
@@ -239,7 +242,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "URL with non-standard port",
 			input: "https://example.com:9443/secure",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "https://example.com:9443/secure",
 				Scheme:   "https",
 				Host:     "example.com",
@@ -250,7 +253,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "hostname with subdomain",
 			input: "api.example.com",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "api.example.com",
 				Scheme:   "",
 				Host:     "api.example.com",
@@ -261,7 +264,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "hostname with subdomain and port",
 			input: "api.example.com:3000",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "api.example.com:3000",
 				Scheme:   "",
 				Host:     "api.example.com",
@@ -272,7 +275,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "URL with query parameters",
 			input: "https://example.com/search?q=test",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "https://example.com/search?q=test",
 				Scheme:   "https",
 				Host:     "example.com",
@@ -283,7 +286,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "URL with fragment",
 			input: "https://example.com/page#section",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "https://example.com/page#section",
 				Scheme:   "https",
 				Host:     "example.com",
@@ -294,7 +297,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "localhost",
 			input: "localhost:8080",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "localhost:8080",
 				Scheme:   "",
 				Host:     "localhost",
@@ -305,7 +308,7 @@ func TestParseInputURL(t *testing.T) {
 		{
 			name:  "IP address",
 			input: "192.168.1.1:80",
-			want: ParsedURL{
+			want: parser.ParsedURL{
 				Original: "192.168.1.1:80",
 				Scheme:   "",
 				Host:     "192.168.1.1",
@@ -317,7 +320,7 @@ func TestParseInputURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseInputURL(tt.input)
+			got := parser.ParseInputURL(tt.input)
 
 			if got.Original != tt.want.Original {
 				t.Errorf("parseInputURL().Original = %v, want %v", got.Original, tt.want.Original)
@@ -342,13 +345,13 @@ func TestParseInputURL(t *testing.T) {
 func TestGetSchemesToTest(t *testing.T) {
 	tests := []struct {
 		name       string
-		parsed     ParsedURL
+		parsed     parser.ParsedURL
 		allSchemes bool
 		want       []string
 	}{
 		{
 			name: "no scheme, default behavior",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Scheme: "",
 				Host:   "example.com",
 			},
@@ -357,7 +360,7 @@ func TestGetSchemesToTest(t *testing.T) {
 		},
 		{
 			name: "http scheme, no flag",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Scheme: "http",
 				Host:   "example.com",
 			},
@@ -366,7 +369,7 @@ func TestGetSchemesToTest(t *testing.T) {
 		},
 		{
 			name: "https scheme, no flag",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Scheme: "https",
 				Host:   "example.com",
 			},
@@ -375,7 +378,7 @@ func TestGetSchemesToTest(t *testing.T) {
 		},
 		{
 			name: "http scheme, all-schemes flag",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Scheme: "http",
 				Host:   "example.com",
 			},
@@ -384,7 +387,7 @@ func TestGetSchemesToTest(t *testing.T) {
 		},
 		{
 			name: "https scheme, all-schemes flag",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Scheme: "https",
 				Host:   "example.com",
 			},
@@ -393,7 +396,7 @@ func TestGetSchemesToTest(t *testing.T) {
 		},
 		{
 			name: "no scheme, all-schemes flag",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Scheme: "",
 				Host:   "example.com",
 			},
@@ -404,14 +407,38 @@ func TestGetSchemesToTest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set config for this test
-			resetConfig()
-			config.AllSchemes = tt.allSchemes
+			// NOTE: getSchemesToTest is a private function, so we test it indirectly
+			// through ExpandURLs. This test verifies the scheme selection logic.
+			// Build the input URL from the parsed structure
+			inputURL := tt.parsed.Original
+			if inputURL == "" {
+				// Reconstruct URL from parsed components
+				if tt.parsed.Scheme != "" {
+					inputURL = tt.parsed.Scheme + "://" + tt.parsed.Host
+				} else {
+					inputURL = tt.parsed.Host
+				}
+			}
+			got := parser.ExpandURLs(inputURL, tt.allSchemes, false, "")
+			
+			// Extract schemes from the expanded URLs
+			schemes := make(map[string]bool)
+			for _, url := range got {
+				if strings.HasPrefix(url, "http://") {
+					schemes["http"] = true
+				} else if strings.HasPrefix(url, "https://") {
+					schemes["https"] = true
+				}
+			}
+			
+			gotSchemes := make([]string, 0, len(schemes))
+			for scheme := range schemes {
+				gotSchemes = append(gotSchemes, scheme)
+			}
+			sort.Strings(gotSchemes)
 
-			got := getSchemesToTest(tt.parsed)
-
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("getSchemesToTest() = %v, want %v", got, tt.want)
+			if !reflect.DeepEqual(gotSchemes, tt.want) {
+				t.Errorf("getSchemesToTest() = %v, want %v", gotSchemes, tt.want)
 			}
 		})
 	}
@@ -421,7 +448,7 @@ func TestGetSchemesToTest(t *testing.T) {
 func TestGetPortsToTest(t *testing.T) {
 	tests := []struct {
 		name        string
-		parsed      ParsedURL
+		parsed      parser.ParsedURL
 		scheme      string
 		ignorePorts bool
 		customPorts string
@@ -429,7 +456,7 @@ func TestGetPortsToTest(t *testing.T) {
 	}{
 		{
 			name: "no port, http scheme, default",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "",
 			},
 			scheme:      "http",
@@ -439,7 +466,7 @@ func TestGetPortsToTest(t *testing.T) {
 		},
 		{
 			name: "no port, https scheme, default",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "",
 			},
 			scheme:      "https",
@@ -449,7 +476,7 @@ func TestGetPortsToTest(t *testing.T) {
 		},
 		{
 			name: "port 8080, no flags",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "8080",
 			},
 			scheme:      "http",
@@ -459,27 +486,27 @@ func TestGetPortsToTest(t *testing.T) {
 		},
 		{
 			name: "port 443, ignore-ports, https",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "443",
 			},
 			scheme:      "https",
 			ignorePorts: true,
 			customPorts: "",
-			want:        DefaultHTTPSPorts,
+			want:        parser.DefaultHTTPSPorts,
 		},
 		{
 			name: "port 80, ignore-ports, http",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "80",
 			},
 			scheme:      "http",
 			ignorePorts: true,
 			customPorts: "",
-			want:        DefaultHTTPPorts,
+			want:        parser.DefaultHTTPPorts,
 		},
 		{
 			name: "custom ports override everything",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "9000",
 			},
 			scheme:      "http",
@@ -489,7 +516,7 @@ func TestGetPortsToTest(t *testing.T) {
 		},
 		{
 			name: "custom ports with range",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "",
 			},
 			scheme:      "https",
@@ -499,7 +526,7 @@ func TestGetPortsToTest(t *testing.T) {
 		},
 		{
 			name: "no port, no flags, http",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "",
 			},
 			scheme:      "http",
@@ -509,7 +536,7 @@ func TestGetPortsToTest(t *testing.T) {
 		},
 		{
 			name: "no port, no flags, https",
-			parsed: ParsedURL{
+			parsed: parser.ParsedURL{
 				Port: "",
 			},
 			scheme:      "https",
@@ -521,21 +548,57 @@ func TestGetPortsToTest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set config for this test
-			resetConfig()
-			config.IgnorePorts = tt.ignorePorts
-			config.CustomPorts = tt.customPorts
-
-			got := getPortsToTest(tt.parsed, tt.scheme)
-
-			// Sort for comparison
-			sort.Strings(got)
+			// NOTE: getPortsToTest is a private function, so we test it indirectly
+			// through ExpandURLs. This test verifies the port selection logic.
+			// Build the input URL from the parsed structure
+			inputURL := tt.parsed.Original
+			if inputURL == "" {
+				// Reconstruct URL from parsed components
+				host := tt.parsed.Host
+				if host == "" {
+					host = "example.com" // Default host for testing
+				}
+				if tt.parsed.Port != "" {
+					inputURL = host + ":" + tt.parsed.Port
+				} else {
+					inputURL = host
+				}
+			}
+			got := parser.ExpandURLs(inputURL, false, tt.ignorePorts, tt.customPorts)
+			
+			// Extract ports from the expanded URLs for the specified scheme
+			ports := make(map[string]bool)
+			schemePrefix := tt.scheme + "://"
+			for _, url := range got {
+				if strings.HasPrefix(url, schemePrefix) {
+					// Extract port from URL
+					parts := strings.Split(strings.TrimPrefix(url, schemePrefix), "/")
+					hostPort := parts[0]
+					if strings.Contains(hostPort, ":") {
+						port := strings.Split(hostPort, ":")[1]
+						ports[port] = true
+					} else {
+						// Default port (not included in URL)
+						if tt.scheme == "http" {
+							ports["80"] = true
+						} else {
+							ports["443"] = true
+						}
+					}
+				}
+			}
+			
+			gotPorts := make([]string, 0, len(ports))
+			for port := range ports {
+				gotPorts = append(gotPorts, port)
+			}
+			sort.Strings(gotPorts)
 			want := make([]string, len(tt.want))
 			copy(want, tt.want)
 			sort.Strings(want)
 
-			if !reflect.DeepEqual(got, want) {
-				t.Errorf("getPortsToTest() = %v, want %v", got, want)
+			if !reflect.DeepEqual(gotPorts, want) {
+				t.Errorf("getPortsToTest() = %v, want %v", gotPorts, want)
 			}
 		})
 	}
@@ -630,7 +693,7 @@ func TestExpandURLs(t *testing.T) {
 			allSchemes:  false,
 			ignorePorts: false,
 			customPorts: "80,443,8080",
-			wantCount:   6, // 2 schemes × 3 ports
+			wantCount:   6, // 2 schemes × 3 ports (including invalid combinations)
 			wantContain: []string{
 				"http://example.com:80/",
 				"http://example.com:443/",
@@ -707,13 +770,7 @@ func TestExpandURLs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set config for this test
-			resetConfig()
-			config.AllSchemes = tt.allSchemes
-			config.IgnorePorts = tt.ignorePorts
-			config.CustomPorts = tt.customPorts
-
-			got := expandURLs(tt.input)
+			got := parser.ExpandURLs(tt.input, tt.allSchemes, tt.ignorePorts, tt.customPorts)
 
 			if len(got) != tt.wantCount {
 				t.Errorf("expandURLs() returned %d URLs, want %d\nGot: %v", len(got), tt.wantCount, got)
@@ -747,14 +804,9 @@ func TestExpandURLs(t *testing.T) {
 
 // TestExpandURLs_Deduplication tests that expandURLs properly deduplicates
 func TestExpandURLs_Deduplication(t *testing.T) {
-	resetConfig()
-	config.AllSchemes = false
-	config.IgnorePorts = false
-	config.CustomPorts = ""
-
 	// Test that same URL isn't duplicated
 	input := "http://example.com:80"
-	got := expandURLs(input)
+	got := parser.ExpandURLs(input, false, false, "")
 
 	if len(got) != 1 {
 		t.Errorf("expandURLs() should not create duplicates, got %d URLs: %v", len(got), got)
@@ -785,11 +837,7 @@ func TestExpandURLs_ErrorHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetConfig()
-			config.CustomPorts = tt.customPorts
-			config.Silent = true // Suppress error messages in tests
-
-			got := expandURLs(tt.input)
+			got := parser.ExpandURLs(tt.input, false, false, tt.customPorts)
 
 			if len(got) != tt.wantCount {
 				t.Errorf("expandURLs() with error should return %d URLs, got %d: %v", tt.wantCount, len(got), got)

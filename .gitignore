@@ -1,1 +1,88 @@
+<<<<<<< HEAD
 probeHTTP
+=======
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+probeHTTP
+probeHTTP.exe
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+coverage.out
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go module download cache
+go.sum.backup
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
+*.logs
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# Build artifacts
+build/
+dist/
+bin/
+
+# Test output files
+test_output/
+testdata/output/
+*.json.out
+
+# Backup files
+*.bak
+*.backup
+
+# Environment files (if any sensitive config)
+.env
+.env.local
+.env.*.local
+
+# Profiling files
+*.prof
+*.pprof
+
+# Debug files
+debug
+debug.exe
+__debug_bin*
+
+# Air live reload tool
+.air.toml
+tmp/
+>>>>>>> d7d38f583534454c004eff5c63c4ea1e1416fe88
