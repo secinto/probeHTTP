@@ -14,10 +14,11 @@ import (
 
 // Client wraps an HTTP client with rate limiting capabilities
 type Client struct {
-	httpClient *http.Client
-	limiters   map[string]*rate.Limiter
-	mu         sync.Mutex
-	config     *config.Config
+	httpClient     *http.Client
+	limiters       map[string]*rate.Limiter
+	mu             sync.Mutex
+	config         *config.Config
+	http3Transport *http3.Transport // Track HTTP/3 transport for cleanup
 }
 
 // NewClient creates a new HTTP client with optimized settings
@@ -119,7 +120,8 @@ func NewClientWithTLSConfig(cfg *config.Config, tlsConfig *tls.Config) *Client {
 }
 
 // NewHTTP3Client creates an HTTP/3 client with the specified TLS configuration
-func NewHTTP3Client(cfg *config.Config, tlsConfig *tls.Config) *http.Client {
+// Returns both the client and transport so the transport can be closed later
+func NewHTTP3Client(cfg *config.Config, tlsConfig *tls.Config) (*http.Client, *http3.Transport) {
 	// Create HTTP/3 transport
 	transport := &http3.Transport{
 		TLSClientConfig: tlsConfig,
@@ -134,7 +136,19 @@ func NewHTTP3Client(cfg *config.Config, tlsConfig *tls.Config) *http.Client {
 		},
 	}
 
-	return httpClient
+	return httpClient, transport
+}
+
+// Close cleans up the client's resources
+func (c *Client) Close() error {
+	if c.http3Transport != nil {
+		return c.http3Transport.Close()
+	}
+	// For HTTP/1.1 and HTTP/2, close idle connections
+	if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
+		transport.CloseIdleConnections()
+	}
+	return nil
 }
 
 // NewHTTP2Client creates an HTTP/2 client with the specified TLS configuration
