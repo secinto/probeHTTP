@@ -1,8 +1,11 @@
 # Binaries for programs and plugins
+*.exe
+*.exe~
 *.dll
 *.so
 *.dylib
 probeHTTP
+probeHTTP.exe
 
 # Test binary, built with `go test -c`
 *.test
@@ -10,41 +13,75 @@ probeHTTP
 # Output of the go coverage tool
 *.out
 coverage.out
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
 
 # Dependency directories
 vendor/
 
-# Go workspace file
-go.work
+# Go module download cache
+go.sum.backup
 
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# IDE and editor files
+# IDE specific files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+
+# OS generated files
 .DS_Store
-
-# Test outputs and temporary files
-testdata/output/
-tmp/
-*.tmp
-
-# Build artifacts
-dist/
-build/
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
 # Log files
 *.log
+*.logs
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+tmp/
+
+# Build artifacts
+build/
+dist/
+bin/
+
+# Test output files
+test_output/
+testdata/output/
+*.json.out
+
+# Backup files
+*.bak
+*.backup
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Profiling files
+*.prof
+*.pprof
 
 # Debug files
 debug
-__debug_bin
+debug.exe
+__debug_bin*
+
+# Air live reload tool
+.air.toml
 
 # Local configuration files
 *.local

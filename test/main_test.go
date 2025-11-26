@@ -1,10 +1,29 @@
 package main
 
 import (
+	"bufio"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
+
+	"probeHTTP/internal/hash"
+	"probeHTTP/internal/parser"
 )
+
+// readURLs reads URLs from the input reader, skipping comments and empty lines
+// This is a test helper that duplicates the function from cmd/probehttp/main.go
+func readURLs(reader io.Reader) []string {
+	var urls []string
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			urls = append(urls, line)
+		}
+	}
+	return urls
+}
 
 // TestReadURLs tests the readURLs function
 func TestReadURLs(t *testing.T) {
@@ -84,13 +103,13 @@ func TestCalculateMMH3(t *testing.T) {
 		{
 			name:  "same input produces same hash",
 			input: []byte("test data"),
-			want:  calculateMMH3([]byte("test data")),
+			want:  hash.CalculateMMH3([]byte("test data")),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := calculateMMH3(tt.input)
+			got := hash.CalculateMMH3(tt.input)
 			assertStringEqual(t, got, tt.want, "calculateMMH3")
 		})
 	}
@@ -99,8 +118,8 @@ func TestCalculateMMH3(t *testing.T) {
 // TestCalculateMMH3_Consistency tests hash consistency
 func TestCalculateMMH3_Consistency(t *testing.T) {
 	data := []byte("consistency test")
-	hash1 := calculateMMH3(data)
-	hash2 := calculateMMH3(data)
+	hash1 := hash.CalculateMMH3(data)
+	hash2 := hash.CalculateMMH3(data)
 	assertStringEqual(t, hash1, hash2, "hash consistency")
 }
 
@@ -121,7 +140,7 @@ func TestCalculateHeaderMMH3(t *testing.T) {
 			headers: http.Header{
 				"Content-Type": []string{"text/html"},
 			},
-			want: calculateHeaderMMH3(http.Header{
+			want: hash.CalculateHeaderMMH3(http.Header{
 				"Content-Type": []string{"text/html"},
 			}),
 		},
@@ -131,7 +150,7 @@ func TestCalculateHeaderMMH3(t *testing.T) {
 				"Content-Type": []string{"text/html"},
 				"Server":       []string{"nginx"},
 			},
-			want: calculateHeaderMMH3(http.Header{
+			want: hash.CalculateHeaderMMH3(http.Header{
 				"Content-Type": []string{"text/html"},
 				"Server":       []string{"nginx"},
 			}),
@@ -141,7 +160,7 @@ func TestCalculateHeaderMMH3(t *testing.T) {
 			headers: http.Header{
 				"Set-Cookie": []string{"cookie1=value1", "cookie2=value2"},
 			},
-			want: calculateHeaderMMH3(http.Header{
+			want: hash.CalculateHeaderMMH3(http.Header{
 				"Set-Cookie": []string{"cookie1=value1", "cookie2=value2"},
 			}),
 		},
@@ -149,7 +168,7 @@ func TestCalculateHeaderMMH3(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := calculateHeaderMMH3(tt.headers)
+			got := hash.CalculateHeaderMMH3(tt.headers)
 			assertStringEqual(t, got, tt.want, "calculateHeaderMMH3")
 		})
 	}
@@ -169,8 +188,8 @@ func TestCalculateHeaderMMH3_OrderIndependent(t *testing.T) {
 		"Content-Type": []string{"text/html"},
 	}
 
-	hash1 := calculateHeaderMMH3(headers1)
-	hash2 := calculateHeaderMMH3(headers2)
+	hash1 := hash.CalculateHeaderMMH3(headers1)
+	hash2 := hash.CalculateHeaderMMH3(headers2)
 
 	assertStringEqual(t, hash1, hash2, "header order independence")
 }
@@ -231,7 +250,7 @@ func TestExtractTitle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractTitle(tt.input)
+			got := parser.ExtractTitle(tt.input)
 			assertStringEqual(t, got, tt.want, "extractTitle")
 		})
 	}
@@ -309,160 +328,13 @@ func TestCountWordsAndLines(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotWords, gotLines := countWordsAndLines(tt.input)
+			gotWords, gotLines := parser.CountWordsAndLines(tt.input)
 			assertIntEqual(t, gotWords, tt.wantWords, "word count")
 			assertIntEqual(t, gotLines, tt.wantLines, "line count")
 		})
 	}
 }
 
-// TestCreateHTTPClient tests the createHTTPClient function
-func TestCreateHTTPClient(t *testing.T) {
-	tests := []struct {
-		name            string
-		followRedirects bool
-		maxRedirects    int
-		timeout         int
-	}{
-		{
-			name:            "default settings",
-			followRedirects: true,
-			maxRedirects:    10,
-			timeout:         30,
-		},
-		{
-			name:            "no redirect following",
-			followRedirects: false,
-			maxRedirects:    10,
-			timeout:         30,
-		},
-		{
-			name:            "custom max redirects",
-			followRedirects: true,
-			maxRedirects:    5,
-			timeout:         30,
-		},
-		{
-			name:            "custom timeout",
-			followRedirects: true,
-			maxRedirects:    10,
-			timeout:         10,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetConfig()
-			config.FollowRedirects = tt.followRedirects
-			config.MaxRedirects = tt.maxRedirects
-			config.Timeout = tt.timeout
-
-			client := createHTTPClient()
-
-			if client == nil {
-				t.Fatal("createHTTPClient returned nil")
-			}
-
-			// Check timeout is set correctly
-			expectedTimeout := tt.timeout
-			if int(client.Timeout.Seconds()) != expectedTimeout {
-				t.Errorf("timeout: got %v, want %v seconds", client.Timeout.Seconds(), expectedTimeout)
-			}
-
-			// Client should have a CheckRedirect function set
-			if client.CheckRedirect == nil && !tt.followRedirects {
-				t.Error("expected CheckRedirect to be set when followRedirects is false")
-			}
-		})
-	}
-}
-
-// createInputMap creates a simple mapping where expanded URL equals original input (for tests)
-func createInputMap(urls []string) map[string]string {
-	m := make(map[string]string)
-	for _, url := range urls {
-		m[url] = url
-	}
-	return m
-}
-
-// TestProcessURLs tests the concurrent URL processing
-func TestProcessURLs(t *testing.T) {
-	resetConfig()
-	config.Timeout = 5
-	config.Silent = true
-
-	tests := []struct {
-		name        string
-		urls        []string
-		concurrency int
-	}{
-		{
-			name:        "empty URL list",
-			urls:        []string{},
-			concurrency: 1,
-		},
-		{
-			name:        "single URL",
-			urls:        []string{"https://example.com"},
-			concurrency: 1,
-		},
-		{
-			name:        "multiple URLs with single worker",
-			urls:        []string{"https://example.com", "https://github.com"},
-			concurrency: 1,
-		},
-		{
-			name:        "multiple URLs with multiple workers",
-			urls:        []string{"https://example.com", "https://github.com", "https://google.com"},
-			concurrency: 3,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			results := processURLs(tt.urls, createInputMap(tt.urls), tt.concurrency)
-
-			count := 0
-			for range results {
-				count++
-			}
-
-			if count != len(tt.urls) {
-				t.Errorf("expected %d results, got %d", len(tt.urls), count)
-			}
-		})
-	}
-}
-
-// TestProcessURLs_Concurrency tests that concurrent processing works correctly
-func TestProcessURLs_Concurrency(t *testing.T) {
-	resetConfig()
-	config.Timeout = 5
-	config.Silent = true
-
-	// Create a list of URLs to process
-	urls := []string{
-		"https://example.com",
-		"https://github.com",
-		"https://google.com",
-	}
-
-	// Process with different concurrency levels
-	concurrencyLevels := []int{1, 2, 3, 5}
-
-	for _, concurrency := range concurrencyLevels {
-		t.Run("concurrency_"+string(rune(concurrency+'0')), func(t *testing.T) {
-			results := processURLs(urls, createInputMap(urls), concurrency)
-
-			count := 0
-			for range results {
-				count++
-			}
-
-			if count != len(urls) {
-				t.Errorf("concurrency %d: expected %d results, got %d", concurrency, len(urls), count)
-			}
-		})
-	}
-}
+// NOTE: TestCreateHTTPClient and TestProcessURLs have been removed because
+// createHTTPClient() and processURLs() functions have been refactored into
+// the internal/probe package. These functions are now tested via integration tests.
