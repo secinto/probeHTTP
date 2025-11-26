@@ -165,9 +165,12 @@ func TestTLSClientCreation(t *testing.T) {
 		}
 
 		// Test HTTP/3 client
-		client3 := probe.NewHTTP3Client(cfg, tlsConfig)
+		client3, transport3 := probe.NewHTTP3Client(cfg, tlsConfig)
 		if client3 == nil {
 			t.Errorf("NewHTTP3Client returned nil for strategy %s", strategy.Name)
+		}
+		if transport3 != nil {
+			defer transport3.Close()
 		}
 	}
 }

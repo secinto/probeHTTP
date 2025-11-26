@@ -28,10 +28,12 @@ type Config struct {
 	MaxBodySize        int64 // NEW: Maximum response body size in bytes
 	MaxRetries         int   // NEW: Maximum number of retries
 	TLSHandshakeTimeout int  // NEW: Timeout for TLS handshake attempts in seconds
+	RateLimitTimeout   int   // NEW: Timeout for rate limit wait in seconds
 	DisableHTTP3       bool  // NEW: Disable HTTP/3 (QUIC) support
 	DebugLogFile       string // NEW: Debug log file path (optional)
 	Logger             *slog.Logger // NEW: Structured logger
 	DebugLogger        *slog.Logger // NEW: Debug file logger (if DebugLogFile is set)
+	debugFileHandle    *os.File // Track debug file handle for cleanup
 }
 
 // New creates a new Config with default values
@@ -52,6 +54,7 @@ func New() *Config {
 		MaxBodySize:        10 * 1024 * 1024, // 10 MB default
 		MaxRetries:         0,                // No retries by default
 		TLSHandshakeTimeout: 10,              // 10 seconds default
+		RateLimitTimeout:   60,               // 60 seconds default
 		DisableHTTP3:       false,            // HTTP/3 enabled by default
 	}
 }
@@ -93,6 +96,7 @@ func ParseFlags() (*Config, error) {
 	flag.IntVar(&cfg.MaxRetries, "retries", 0, "Maximum number of retries for failed requests")
 	flag.IntVar(&cfg.TLSHandshakeTimeout, "tls-timeout", 10, "Timeout for TLS handshake attempts in seconds")
 	flag.IntVar(&cfg.TLSHandshakeTimeout, "tls-handshake-timeout", 10, "Timeout for TLS handshake attempts in seconds")
+	flag.IntVar(&cfg.RateLimitTimeout, "rate-limit-timeout", 60, "Rate limit wait timeout in seconds")
 	flag.BoolVar(&cfg.DisableHTTP3, "disable-http3", false, "Disable HTTP/3 (QUIC) support")
 	flag.StringVar(&cfg.DebugLogFile, "debug-log", "", "Write detailed debug logs to file")
 
@@ -122,6 +126,7 @@ func ParseFlags() (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create debug log file: %v", err)
 		}
+		cfg.debugFileHandle = debugFile // Track handle for cleanup
 		cfg.DebugLogger = slog.New(slog.NewTextHandler(debugFile, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
 		}))
@@ -129,6 +134,14 @@ func ParseFlags() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Close cleans up the config's resources
+func (c *Config) Close() error {
+	if c.debugFileHandle != nil {
+		return c.debugFileHandle.Close()
+	}
+	return nil
 }
 
 // HasPipedData checks if there is data being piped to stdin

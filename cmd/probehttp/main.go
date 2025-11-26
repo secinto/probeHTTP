@@ -24,6 +24,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	defer cfg.Close() // Clean up debug log file
 
 	// If no arguments provided and nothing is piped to stdin, show help
 	if flag.NFlag() == 0 && cfg.InputFile == "" && !config.HasPipedData() {
@@ -110,20 +111,28 @@ func main() {
 	afterDedup := len(expandedURLs)
 	if beforeDedup != afterDedup {
 		cfg.Logger.Info("deduplicated URLs", "before", beforeDedup, "after", afterDedup)
-		// Rebuild originalInputMap for deduplicated URLs
-		// If a URL was deduplicated, keep the mapping from the first occurrence
+		// Rebuild originalInputMap for deduplicated URLs - O(n) instead of O(n²)
+		// Pre-compute normalized mappings
+		normalizedMap := make(map[string]string)
+		for origURL, origInput := range originalInputMap {
+			normalized := parser.NormalizeURL(origURL)
+			if _, exists := normalizedMap[normalized]; !exists {
+				normalizedMap[normalized] = origInput
+			}
+		}
+
+		// O(n) lookup
 		newOriginalInputMap := make(map[string]string)
 		for _, urlStr := range expandedURLs {
 			if originalInput, exists := originalInputMap[urlStr]; exists {
 				newOriginalInputMap[urlStr] = originalInput
 			} else {
-				// Check if a normalized version exists
 				normalized := parser.NormalizeURL(urlStr)
-				for origURL, origInput := range originalInputMap {
-					if parser.NormalizeURL(origURL) == normalized {
-						newOriginalInputMap[urlStr] = origInput
-						break
-					}
+				if origInput, exists := normalizedMap[normalized]; exists {
+					newOriginalInputMap[urlStr] = origInput
+				} else {
+					// Fallback: use the URL itself as input
+					newOriginalInputMap[urlStr] = urlStr
 				}
 			}
 		}
@@ -132,6 +141,7 @@ func main() {
 
 	// Create prober
 	prober := probe.NewProber(cfg)
+	defer prober.Close() // Clean up HTTP clients and transports
 
 	// Process URLs with worker pool
 	results := prober.ProcessURLs(ctx, expandedURLs, originalInputMap, cfg.Concurrency)

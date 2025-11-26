@@ -26,15 +26,40 @@ type Prober struct {
 	client *Client
 	config *config.Config
 	// Mutex for atomic stderr writes when flushing debug buffers
-	stderrMutex sync.Mutex
+	stderrMutex  sync.Mutex
+	cleanupFuncs []func() error
+	cleanupMutex sync.Mutex
 }
 
 // NewProber creates a new Prober instance
 func NewProber(cfg *config.Config) *Prober {
 	return &Prober{
-		client: NewClient(cfg),
-		config: cfg,
+		client:       NewClient(cfg),
+		config:       cfg,
+		cleanupFuncs: make([]func() error, 0),
 	}
+}
+
+// Close cleans up all resources used by the prober
+func (p *Prober) Close() error {
+	p.cleanupMutex.Lock()
+	defer p.cleanupMutex.Unlock()
+
+	var errs []error
+	for _, cleanup := range p.cleanupFuncs {
+		if err := cleanup(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if err := p.client.Close(); err != nil {
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("cleanup errors: %v", errs)
+	}
+	return nil
 }
 
 // ProbeURL performs the HTTP probe for a single URL with retry support
@@ -149,12 +174,20 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	// Extract hostname for rate limiting
 	hostname := parsedURL.Hostname()
 
-	// Apply rate limiting per host
+	// Apply rate limiting per host with timeout
 	limiter := p.client.GetLimiter(hostname)
-	if err := limiter.Wait(ctx); err != nil {
-		result.Error = fmt.Sprintf("Rate limit wait cancelled: %v", err)
+	
+	waitCtx, waitCancel := context.WithTimeout(ctx, time.Duration(p.config.RateLimitTimeout)*time.Second)
+	defer waitCancel()
+	
+	if err := limiter.Wait(waitCtx); err != nil {
+		if err == context.DeadlineExceeded {
+			result.Error = fmt.Sprintf("rate limit wait timeout after %ds", p.config.RateLimitTimeout)
+		} else {
+			result.Error = fmt.Sprintf("rate limit wait cancelled: %v", err)
+		}
 		if p.config.DebugLogger != nil {
-			p.config.DebugLogger.Warn("rate limit wait cancelled", "url", probeURL, "error", err)
+			p.config.DebugLogger.Warn("rate limit wait failed", "url", probeURL, "error", err)
 		}
 		p.flushDebugBuffer(&debugBuf)
 		return result
@@ -351,12 +384,25 @@ func (p *Prober) probeURLWithParallelTLS(ctx context.Context, probeURL string, o
 
 	hostname := parsedURL.Hostname()
 	limiter := p.client.GetLimiter(hostname)
-	if err := limiter.Wait(ctx); err != nil {
+	
+	// Create timeout context for rate limiter
+	waitCtx, waitCancel := context.WithTimeout(ctx, time.Duration(p.config.RateLimitTimeout)*time.Second)
+	defer waitCancel()
+	
+	if err := limiter.Wait(waitCtx); err != nil {
+		if err == context.DeadlineExceeded {
+			return output.ProbeResult{
+				Timestamp: time.Now().Format(time.RFC3339),
+				Input:     originalInput,
+				Method:    "GET",
+				Error:     fmt.Sprintf("rate limit wait timeout after %ds", p.config.RateLimitTimeout),
+			}
+		}
 		return output.ProbeResult{
 			Timestamp: time.Now().Format(time.RFC3339),
 			Input:     originalInput,
 			Method:    "GET",
-			Error:     fmt.Sprintf("Rate limit wait cancelled: %v", err),
+			Error:     fmt.Sprintf("rate limit wait cancelled: %v", err),
 		}
 	}
 
@@ -396,7 +442,7 @@ func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput
 		)
 	}
 
-	// Create result channel
+	// Create buffered result channel to prevent goroutine blocking
 	results := make(chan output.ProbeResult, len(strategies))
 	var wg sync.WaitGroup
 
@@ -419,7 +465,14 @@ func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput
 		wg.Add(1)
 		go func(s TLSStrategy, proto string) {
 			defer wg.Done()
-			results <- p.probeURLWithConfig(tlsCtx, probeURL, originalInput, s, proto)
+			
+			// Try to send result, but don't block if context is cancelled
+			select {
+			case results <- p.probeURLWithConfig(tlsCtx, probeURL, originalInput, s, proto):
+			case <-tlsCtx.Done():
+				// Context cancelled, don't block
+				return
+			}
 		}(strategy, protocol)
 	}
 
@@ -439,13 +492,18 @@ func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput
 			firstSuccess = result
 			successFound = true
 			cancel() // Cancel remaining attempts
+			
+			// Drain remaining results to prevent goroutine leaks
+			go func() {
+				for range results {
+					// Discard remaining results
+				}
+			}()
+			
+			return firstSuccess
 		} else if result.Error != "" {
 			allErrors = append(allErrors, result.Error)
 		}
-	}
-
-	if successFound {
-		return firstSuccess
 	}
 
 	// All attempts failed
@@ -493,22 +551,43 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 
 	// Create appropriate client based on protocol
 	var httpClient *http.Client
+	var cleanup func()
+	
 	switch protocol {
 	case "HTTP/3":
-		httpClient = NewHTTP3Client(p.config, tlsConfig)
+		client, transport := NewHTTP3Client(p.config, tlsConfig)
+		httpClient = client
+		cleanup = func() {
+			transport.Close()
+		}
 		if p.config.DebugLogger != nil {
 			p.config.DebugLogger.Debug("created HTTP/3 client", "url", probeURL)
 		}
 	case "HTTP/2":
 		httpClient = NewHTTP2Client(p.config, tlsConfig)
+		cleanup = func() {
+			if transport, ok := httpClient.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
 		if p.config.DebugLogger != nil {
 			p.config.DebugLogger.Debug("created HTTP/2 client", "url", probeURL)
 		}
 	default: // HTTP/1.1
 		httpClient = NewHTTP11Client(p.config, tlsConfig)
+		cleanup = func() {
+			if transport, ok := httpClient.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
 		if p.config.DebugLogger != nil {
 			p.config.DebugLogger.Debug("created HTTP/1.1 client", "url", probeURL)
 		}
+	}
+	
+	// Ensure cleanup happens
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Parse URL
@@ -632,12 +711,24 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 			result.Error = fmt.Sprintf("Redirect error: %v", err)
 			result.ChainStatusCodes = statusChain
 			result.ChainHosts = hostChain
+			// Close finalResp body if it exists
+			if finalResp != nil && finalResp.Body != nil {
+				finalResp.Body.Close()
+			}
 			p.flushDebugBuffer(&debugBuf)
 			return result
 		}
 		// Read final response body
 		finalResp.Body = io.NopCloser(io.LimitReader(finalResp.Body, p.config.MaxBodySize))
-		initialBody, _ = io.ReadAll(finalResp.Body)
+		bodyReadErr := error(nil)
+		initialBody, bodyReadErr = io.ReadAll(finalResp.Body)
+		if bodyReadErr != nil {
+			p.config.Logger.Warn("error reading final response body",
+				"url", probeURL,
+				"error", bodyReadErr,
+			)
+			result.Error = fmt.Sprintf("partial body read: %v", bodyReadErr)
+		}
 		finalResp.Body.Close()
 	} else {
 		finalResp = resp
