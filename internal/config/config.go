@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+
+	"probeHTTP/pkg/version"
 )
 
 // Config holds the CLI configuration
@@ -31,6 +33,7 @@ type Config struct {
 	RateLimitTimeout   int   // NEW: Timeout for rate limit wait in seconds
 	DisableHTTP3       bool  // NEW: Disable HTTP/3 (QUIC) support
 	DebugLogFile       string // NEW: Debug log file path (optional)
+	Version            bool   // NEW: Show version information
 	Logger             *slog.Logger // NEW: Structured logger
 	DebugLogger        *slog.Logger // NEW: Debug file logger (if DebugLogFile is set)
 	debugFileHandle    *os.File // Track debug file handle for cleanup
@@ -56,6 +59,7 @@ func New() *Config {
 		TLSHandshakeTimeout: 10,              // 10 seconds default
 		RateLimitTimeout:   60,               // 60 seconds default
 		DisableHTTP3:       false,            // HTTP/3 enabled by default
+		Version:            false,
 	}
 }
 
@@ -99,8 +103,16 @@ func ParseFlags() (*Config, error) {
 	flag.IntVar(&cfg.RateLimitTimeout, "rate-limit-timeout", 60, "Rate limit wait timeout in seconds")
 	flag.BoolVar(&cfg.DisableHTTP3, "disable-http3", false, "Disable HTTP/3 (QUIC) support")
 	flag.StringVar(&cfg.DebugLogFile, "debug-log", "", "Write detailed debug logs to file")
+	flag.BoolVar(&cfg.Version, "version", false, "Show version information")
+	flag.BoolVar(&cfg.Version, "v", false, "Show version information")
 
 	flag.Parse()
+
+	// Handle version flag
+	if cfg.Version {
+		fmt.Println(version.GetVersion())
+		os.Exit(0)
+	}
 
 	// Validate mutually exclusive flags
 	if cfg.UserAgent != "" && cfg.RandomUserAgent {

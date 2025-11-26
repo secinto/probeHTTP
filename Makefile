@@ -7,20 +7,26 @@ GO=go
 GOFLAGS=-v
 COVERAGE_FILE=coverage.out
 
+# Version information
+VERSION ?= 1.0.0
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+LDFLAGS := -ldflags "-X probeHTTP/pkg/version.Version=$(VERSION) -X probeHTTP/pkg/version.GitCommit=$(GIT_COMMIT) -X probeHTTP/pkg/version.BuildDate=$(BUILD_DATE)"
+
 # Build the application
 build:
 	@echo "Building $(BINARY_NAME)..."
-	$(GO) build $(GOFLAGS) -o $(BINARY_NAME) $(CMD_PATH)
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_NAME) $(CMD_PATH)
 
 # Build for multiple platforms
 build-all:
 	@echo "Building for all platforms..."
 	@mkdir -p dist
-	GOOS=linux GOARCH=amd64 $(GO) build -o dist/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
-	GOOS=linux GOARCH=arm64 $(GO) build -o dist/$(BINARY_NAME)-linux-arm64 $(CMD_PATH)
-	GOOS=darwin GOARCH=amd64 $(GO) build -o dist/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
-	GOOS=darwin GOARCH=arm64 $(GO) build -o dist/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
-	GOOS=windows GOARCH=amd64 $(GO) build -o dist/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
+	GOOS=linux GOARCH=amd64 $(GO) build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
+	GOOS=linux GOARCH=arm64 $(GO) build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-arm64 $(CMD_PATH)
+	GOOS=darwin GOARCH=amd64 $(GO) build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
+	GOOS=darwin GOARCH=arm64 $(GO) build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
+	GOOS=windows GOARCH=amd64 $(GO) build $(LDFLAGS) -o dist/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
 	@echo "✅ Built binaries in dist/"
 
 # Run tests
@@ -102,6 +108,12 @@ fmt:
 check: lint test security
 	@echo "✅ All checks passed"
 
+# Show version
+version:
+	@echo "Version: $(VERSION)"
+	@echo "Git Commit: $(GIT_COMMIT)"
+	@echo "Build Date: $(BUILD_DATE)"
+
 # Show help
 help:
 	@echo "Makefile commands:"
@@ -119,6 +131,7 @@ help:
 	@echo "  make deps-update  - Update dependencies"
 	@echo "  make fmt          - Format code"
 	@echo "  make check        - Run all checks"
+	@echo "  make version      - Show version information"
 	@echo "  make help         - Show this help"
 
 # Default target

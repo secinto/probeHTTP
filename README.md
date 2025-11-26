@@ -59,6 +59,29 @@ Download from [Releases](https://github.com/secinto/probeHTTP/releases) or build
 
 ```bash
 make build-all  # Creates binaries in dist/ for Linux, macOS, Windows (amd64 & arm64)
+
+### Version Information
+
+Build with custom version information:
+
+```bash
+# Build with specific version
+VERSION=1.2.3 make build
+
+# Check version
+./probeHTTP --version
+# Output: probeHTTP 1.2.3 (commit: abc1234, built: 2024-01-01T12:00:00Z, go: go1.24.0)
+
+# View build-time version info
+make version
+```
+
+The binary automatically includes:
+- Semantic version (default: `1.0.0`, customizable via `VERSION` env var)
+- Git commit SHA (automatically detected)
+- Build date (ISO 8601 format)
+- Go version used for compilation
+
 ```
 
 ### Dependencies
@@ -112,6 +135,7 @@ echo -e "https://example.com\nhttps://github.com" | ./probeHTTP
 | `--tls-handshake-timeout` | | Alias for --tls-timeout | 10 |
 | `--disable-http3` | | Disable HTTP/3 (QUIC) support | false |
 | `--debug-log` | | Write detailed debug logs to file | - |
+| `--version` | `-v` | Show version information | - |
 
 ### Examples
 
