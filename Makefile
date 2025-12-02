@@ -1,4 +1,4 @@
-.PHONY: build test bench fuzz lint clean install coverage help
+.PHONY: build build-static build-static-all build-all test bench fuzz lint clean install coverage help
 
 # Variables
 BINARY_NAME=probeHTTP
@@ -6,11 +6,12 @@ CMD_PATH=./cmd/probehttp
 GO=go
 GOFLAGS=-v
 COVERAGE_FILE=coverage.out
-
 # Version information
 VERSION ?= 1.0.0
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+LDFLAGS := -ldflags "-X probeHTTP/pkg/version.Version=$(VERSION) -X probeHTTP/pkg/version.GitCommit=$(GIT_COMMIT) -X probeHTTP/pkg/version.BuildDate=$(BUILD_DATE)"
+LDFLAGS_STATIC := -ldflags "-X probeHTTP/pkg/version.Version=$(VERSION) -X probeHTTP/pkg/version.GitCommit=$(GIT_COMMIT) -X probeHTTP/pkg/version.BuildDate=$(BUILD_DATE) -extldflags '-static'"
 LDFLAGS := -ldflags "-X probeHTTP/pkg/version.Version=$(VERSION) -X probeHTTP/pkg/version.GitCommit=$(GIT_COMMIT) -X probeHTTP/pkg/version.BuildDate=$(BUILD_DATE)"
 
 # Build the application
@@ -119,6 +120,8 @@ help:
 	@echo "Makefile commands:"
 	@echo "  make build        - Build the binary"
 	@echo "  make build-all    - Build for all platforms"
+	@echo "  make build-static     - Build statically linked binary"
+	@echo "  make build-static-all - Build statically linked binaries for all platforms"
 	@echo "  make test         - Run tests"
 	@echo "  make coverage     - Run tests with coverage"
 	@echo "  make bench        - Run benchmarks"
@@ -134,5 +137,36 @@ help:
 	@echo "  make version      - Show version information"
 	@echo "  make help         - Show this help"
 
-# Default target
-.DEFAULT_GOAL := help
+
+# Build statically linked binary
+build-static:
+	@echo "Building statically linked $(BINARY_NAME)..."
+	CGO_ENABLED=0 $(GO) build \
+		-v \
+		-a \
+		-installsuffix cgo \
+		$(LDFLAGS_STATIC) \
+		-o $(BINARY_NAME) \
+		$(CMD_PATH)
+	@echo "✅ Static build complete"
+	@if [ "$$(uname -s)" = "Linux" ]; then \
+		echo "Verifying static linking..."; \
+		if ldd $(BINARY_NAME) 2>&1 | grep -q "not a dynamic executable"; then \
+			echo "✅ Statically linked executable"; \
+		else \
+			echo "⚠ Warning: Binary may have dynamic dependencies:"; \
+			ldd $(BINARY_NAME); \
+		fi; \
+	fi
+
+# Build statically linked binaries for all platforms
+build-static-all:
+	@echo "Building statically linked binaries for all platforms..."
+	@mkdir -p dist
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -v -a -installsuffix cgo $(LDFLAGS_STATIC) -o dist/$(BINARY_NAME)-linux-amd64 $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -v -a -installsuffix cgo $(LDFLAGS_STATIC) -o dist/$(BINARY_NAME)-linux-arm64 $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -v -a -installsuffix cgo $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-amd64 $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -v -a -installsuffix cgo $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-arm64 $(CMD_PATH)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -v -a -installsuffix cgo $(LDFLAGS) -o dist/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
+	@echo "✅ Built static binaries in dist/"
+	@ls -lh dist/

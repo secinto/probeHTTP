@@ -57,8 +57,16 @@ go build -o probeHTTP ./cmd/probehttp
 
 Download from [Releases](https://github.com/secinto/probeHTTP/releases) or build for all platforms:
 
+
 ```bash
 make build-all  # Creates binaries in dist/ for Linux, macOS, Windows (amd64 & arm64)
+
+# Build statically linked binaries (smaller, no dependencies)
+make build-static      # Build static binary for current platform
+make build-static-all  # Build static binaries for all platforms
+```
+
+**Note**: Static linking is fully supported on Linux. macOS and Windows binaries are built with CGO disabled for portability but may not be fully static due to platform limitations.
 
 ### Version Information
 
