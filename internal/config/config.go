@@ -34,6 +34,11 @@ type Config struct {
 	DisableHTTP3       bool  // NEW: Disable HTTP/3 (QUIC) support
 	DebugLogFile       string // NEW: Debug log file path (optional)
 	Version            bool   // NEW: Show version information
+	// Storage options
+	StoreResponse         bool   // Store HTTP responses to disk
+	StoreResponseDir      string // Directory for stored responses
+	IncludeResponseHeader bool   // Include response headers in JSON output
+	IncludeResponse       bool   // Include full request/response in JSON output
 	Logger             *slog.Logger // NEW: Structured logger
 	DebugLogger        *slog.Logger // NEW: Debug file logger (if DebugLogFile is set)
 	debugFileHandle    *os.File // Track debug file handle for cleanup
@@ -60,6 +65,10 @@ func New() *Config {
 		RateLimitTimeout:   60,               // 60 seconds default
 		DisableHTTP3:       false,            // HTTP/3 enabled by default
 		Version:            false,
+		StoreResponse:      false,            // Response storage disabled by default
+		StoreResponseDir:   "output",         // Default storage directory
+		IncludeResponseHeader: false,         // Response headers not included by default
+		IncludeResponse:    false,            // Full request/response not included by default
 	}
 }
 
@@ -105,6 +114,15 @@ func ParseFlags() (*Config, error) {
 	flag.StringVar(&cfg.DebugLogFile, "debug-log", "", "Write detailed debug logs to file")
 	flag.BoolVar(&cfg.Version, "version", false, "Show version information")
 	flag.BoolVar(&cfg.Version, "v", false, "Show version information")
+	// Storage options
+	flag.BoolVar(&cfg.StoreResponse, "sr", false, "Store HTTP responses to output directory")
+	flag.BoolVar(&cfg.StoreResponse, "store-response", false, "Store HTTP responses to output directory")
+	flag.StringVar(&cfg.StoreResponseDir, "srd", "output", "Directory to store HTTP responses")
+	flag.StringVar(&cfg.StoreResponseDir, "store-response-dir", "output", "Directory to store HTTP responses")
+	flag.BoolVar(&cfg.IncludeResponseHeader, "irh", false, "Include response headers in JSON output")
+	flag.BoolVar(&cfg.IncludeResponseHeader, "include-response-header", false, "Include response headers in JSON output")
+	flag.BoolVar(&cfg.IncludeResponse, "irr", false, "Include full request/response in JSON output")
+	flag.BoolVar(&cfg.IncludeResponse, "include-response", false, "Include full request/response in JSON output")
 
 	flag.Parse()
 

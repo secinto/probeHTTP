@@ -18,6 +18,7 @@ import (
 	"probeHTTP/internal/hash"
 	"probeHTTP/internal/output"
 	"probeHTTP/internal/parser"
+	"probeHTTP/internal/storage"
 	"probeHTTP/pkg/useragent"
 )
 
@@ -210,6 +211,12 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
+	// Capture raw request if storage or include-response is enabled
+	var rawRequest string
+	if p.config.StoreResponse || p.config.IncludeResponse {
+		rawRequest = formatRawRequest(req)
+	}
+
 	// Debug: log initial request
 	p.debugRequest(req, 1, &debugBuf)
 
@@ -356,6 +363,37 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	bodyStr := string(initialBody)
 	result.Title = parser.ExtractTitle(bodyStr)
 	result.Words, result.Lines = parser.CountWordsAndLines(bodyStr)
+
+	// Handle response storage and JSON output options
+	if p.config.IncludeResponseHeader {
+		result.ResponseHeaders = normalizeHeaders(finalResp.Header)
+		result.RequestHeaders = normalizeHeaders(req.Header)
+	}
+
+	if p.config.IncludeResponse {
+		result.RawRequest = rawRequest
+		result.RawResponse = formatRawResponse(finalResp)
+	}
+
+	if p.config.StoreResponse {
+		rawResponseHeaders := formatRawResponse(finalResp)
+		// Build redirect chain info for storage
+		redirectChain := make([]string, len(hostChain))
+		for i, host := range hostChain {
+			redirectChain[i] = fmt.Sprintf("%s (status: %d)", host, statusChain[i])
+		}
+
+		storedData := storage.FormatStoredResponse(rawRequest, rawResponseHeaders, redirectChain, initialBody, finalURL)
+		storagePath, err := storage.StoreResponse(p.config.StoreResponseDir, finalParsedURL, "GET", storedData)
+		if err != nil {
+			p.config.Logger.Warn("failed to store response",
+				"url", probeURL,
+				"error", err,
+			)
+		} else {
+			result.StoredResponsePath = storagePath
+		}
+	}
 
 	// Flush debug buffer atomically to stderr
 	p.flushDebugBuffer(&debugBuf)
@@ -616,6 +654,12 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
+	// Capture raw request if storage or include-response is enabled
+	var rawRequestTLS string
+	if p.config.StoreResponse || p.config.IncludeResponse {
+		rawRequestTLS = formatRawRequest(req)
+	}
+
 	// Debug: log initial request
 	p.debugRequest(req, 1, &debugBuf)
 
@@ -782,6 +826,37 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 	result.Title = parser.ExtractTitle(bodyStr)
 	result.Words, result.Lines = parser.CountWordsAndLines(bodyStr)
 
+	// Handle response storage and JSON output options
+	if p.config.IncludeResponseHeader {
+		result.ResponseHeaders = normalizeHeaders(finalResp.Header)
+		result.RequestHeaders = normalizeHeaders(req.Header)
+	}
+
+	if p.config.IncludeResponse {
+		result.RawRequest = rawRequestTLS
+		result.RawResponse = formatRawResponse(finalResp)
+	}
+
+	if p.config.StoreResponse {
+		rawResponseHeaders := formatRawResponse(finalResp)
+		// Build redirect chain info for storage
+		redirectChain := make([]string, len(hostChain))
+		for i, host := range hostChain {
+			redirectChain[i] = fmt.Sprintf("%s (status: %d)", host, statusChain[i])
+		}
+
+		storedData := storage.FormatStoredResponse(rawRequestTLS, rawResponseHeaders, redirectChain, initialBody, finalURL)
+		storagePath, err := storage.StoreResponse(p.config.StoreResponseDir, finalParsedURL, "GET", storedData)
+		if err != nil {
+			p.config.Logger.Warn("failed to store response",
+				"url", probeURL,
+				"error", err,
+			)
+		} else {
+			result.StoredResponsePath = storagePath
+		}
+	}
+
 	// Flush debug buffer atomically to stderr
 	p.flushDebugBuffer(&debugBuf)
 
@@ -838,6 +913,9 @@ func (p *Prober) followRedirectsWithClient(ctx context.Context, initialResp *htt
 		if err != nil {
 			return currentResp, statusChain, hostChain, fmt.Errorf("invalid redirect location: %v", err)
 		}
+
+		// Normalize port when scheme changes (e.g., http:80 -> https should use 443)
+		nextURL = normalizeRedirectURL(currentResp.Request.URL, nextURL)
 
 		nextHostname := nextURL.Hostname()
 
@@ -998,3 +1076,76 @@ func (p *Prober) logError(msg string, args ...interface{}) {
 		p.config.Logger.Error(msg, args...)
 	}
 }
+
+// formatRawRequest formats an HTTP request as a raw string
+func formatRawRequest(req *http.Request) string {
+	var builder strings.Builder
+
+	// Request line
+	path := req.URL.Path
+	if path == "" {
+		path = "/"
+	}
+	if req.URL.RawQuery != "" {
+		path += "?" + req.URL.RawQuery
+	}
+	builder.WriteString(fmt.Sprintf("%s %s HTTP/1.1\n", req.Method, path))
+
+	// Host header
+	builder.WriteString(fmt.Sprintf("Host: %s\n", req.Host))
+
+	// Other headers (sorted for consistency)
+	var keys []string
+	for k := range req.Header {
+		if k != "Host" { // Skip Host as we already wrote it
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range req.Header[k] {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", k, v))
+		}
+	}
+
+	return builder.String()
+}
+
+// formatRawResponse formats HTTP response headers as a raw string
+func formatRawResponse(resp *http.Response) string {
+	var builder strings.Builder
+
+	// Status line
+	builder.WriteString(fmt.Sprintf("HTTP/%d.%d %d %s\n",
+		resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, resp.Status))
+
+	// Headers (sorted for consistency)
+	var keys []string
+	for k := range resp.Header {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range resp.Header[k] {
+			builder.WriteString(fmt.Sprintf("%s: %s\n", k, v))
+		}
+	}
+
+	return builder.String()
+}
+
+// normalizeHeaders normalizes HTTP headers for JSON output
+// Converts header names to lowercase and replaces hyphens with underscores
+func normalizeHeaders(headers http.Header) map[string]string {
+	normalized := make(map[string]string, len(headers))
+	for k, v := range headers {
+		// Convert to lowercase and replace hyphens with underscores
+		key := strings.ReplaceAll(strings.ToLower(k), "-", "_")
+		// Join multiple values with comma
+		normalized[key] = strings.Join(v, ", ")
+	}
+	return normalized
+}
+
+// Ensure storage import is used
+var _ = storage.GenerateFilename

@@ -31,4 +31,10 @@ type ProbeResult struct {
 	Protocol         string   `json:"protocol,omitempty"`
 	TLSConfigStrategy string  `json:"tls_config_strategy,omitempty"`
 	Error            string   `json:"error,omitempty"`
+	// Storage-related fields (optional, based on flags)
+	ResponseHeaders    map[string]string `json:"response_headers,omitempty"`
+	RequestHeaders     map[string]string `json:"request_headers,omitempty"`
+	RawRequest         string            `json:"raw_request,omitempty"`
+	RawResponse        string            `json:"raw_response,omitempty"`
+	StoredResponsePath string            `json:"stored_response_path,omitempty"`
 }
