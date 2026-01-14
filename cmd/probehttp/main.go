@@ -9,8 +9,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/term"
 
 	"probeHTTP/internal/config"
 	"probeHTTP/internal/parser"
@@ -44,6 +47,21 @@ func main() {
 		cfg.Logger.Info("shutting down gracefully...")
 		cancel()
 	}()
+
+	// Initialize response storage directory if enabled
+	if cfg.StoreResponse {
+		responseDir := filepath.Join(cfg.StoreResponseDir, "response")
+		if err := os.MkdirAll(responseDir, 0755); err != nil {
+			cfg.Logger.Error("failed to create response directory",
+				"path", responseDir,
+				"error", err,
+			)
+			os.Exit(1)
+		}
+		cfg.Logger.Info("response storage enabled",
+			"directory", cfg.StoreResponseDir,
+		)
+	}
 
 	// Get input reader
 	var inputReader io.Reader
@@ -149,8 +167,45 @@ func main() {
 	// Write results
 	successCount := 0
 	errorCount := 0
+	completed := 0
+	total := len(expandedURLs)
+
+	// Check if stderr is a terminal for progress display
+	showProgress := !cfg.Silent && term.IsTerminal(int(os.Stderr.Fd()))
+	var termHeight int
+
+	// Set up persistent status bar at bottom of terminal
+	if showProgress {
+		_, termHeight, _ = term.GetSize(int(os.Stderr.Fd()))
+		if termHeight > 0 {
+			// Set scroll region to exclude the bottom line
+			fmt.Fprintf(os.Stderr, "\033[1;%dr", termHeight-1)
+			// Move cursor to top of scroll region
+			fmt.Fprintf(os.Stderr, "\033[1;1H")
+			// Draw initial status bar
+			fmt.Fprintf(os.Stderr, "\033[s\033[%d;1H\033[K[0/%d] Starting...\033[u", termHeight, total)
+		}
+	}
+
+	// Helper function to update status bar
+	updateStatusBar := func(url string) {
+		if !showProgress || termHeight <= 0 {
+			return
+		}
+		// Truncate URL to fit terminal width
+		displayURL := url
+		maxURLLen := 70
+		if len(displayURL) > maxURLLen {
+			displayURL = displayURL[:maxURLLen-3] + "..."
+		}
+		// Save cursor, move to bottom, clear line, draw status, restore cursor
+		fmt.Fprintf(os.Stderr, "\033[s\033[%d;1H\033[K[%d/%d] %s\033[u", termHeight, completed, total, displayURL)
+	}
 
 	for result := range results {
+		completed++
+		updateStatusBar(result.URL)
+
 		// Skip results with errors in JSON output
 		if result.Error != "" {
 			errorCount++
@@ -172,6 +227,16 @@ func main() {
 		}
 
 		successCount++
+	}
+
+	// Clean up terminal state
+	if showProgress && termHeight > 0 {
+		// Reset scroll region to full terminal
+		fmt.Fprintf(os.Stderr, "\033[r")
+		// Clear the status bar line
+		fmt.Fprintf(os.Stderr, "\033[%d;1H\033[K", termHeight)
+		// Move cursor back to normal position
+		fmt.Fprintf(os.Stderr, "\033[%d;1H", termHeight-1)
 	}
 
 	cfg.Logger.Info("probing completed",

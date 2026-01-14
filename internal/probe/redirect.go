@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -52,6 +53,9 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 		if err != nil {
 			return currentResp, statusChain, hostChain, fmt.Errorf("invalid redirect location: %v", err)
 		}
+
+		// Normalize port when scheme changes (e.g., http:80 -> https should use 443)
+		nextURL = normalizeRedirectURL(currentResp.Request.URL, nextURL)
 
 		// Extract hostname from next URL
 		nextHostname := nextURL.Hostname()
@@ -121,4 +125,40 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 			return nextResp, statusChain, hostChain, nil
 		}
 	}
+}
+
+// normalizeRedirectURL fixes port issues when scheme changes during redirect
+// e.g., http://host:80 -> https://host:80 should become https://host:443
+// This prevents "http: server gave HTTP response to HTTPS client" errors
+func normalizeRedirectURL(currentURL, nextURL *url.URL) *url.URL {
+	// Only normalize if scheme changed
+	if currentURL.Scheme == nextURL.Scheme {
+		return nextURL
+	}
+
+	currentPort := currentURL.Port()
+	nextPort := nextURL.Port()
+
+	// If the next URL has no explicit port, nothing to normalize
+	if nextPort == "" {
+		return nextURL
+	}
+
+	// Get default port for current scheme
+	currentDefaultPort := "80"
+	if currentURL.Scheme == "https" {
+		currentDefaultPort = "443"
+	}
+
+	// If current URL was using default port (explicit or implicit)
+	// and next URL kept that same port number, normalize to new scheme's default
+	if (currentPort == "" || currentPort == currentDefaultPort) && nextPort == currentDefaultPort {
+		// Create a copy with normalized port
+		normalized := *nextURL
+		// Remove the port from Host (it will default to scheme's standard port)
+		normalized.Host = nextURL.Hostname()
+		return &normalized
+	}
+
+	return nextURL
 }
