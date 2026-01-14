@@ -86,3 +86,4 @@ __debug_bin*
 # Local configuration files
 *.local
 config.local.*
+.claude/settings.local.json

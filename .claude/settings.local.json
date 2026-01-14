@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go test -v -run TestEndToEnd)",
+      "Bash(go test:*)",
+      "Bash(go run:*)",
+      "Bash(go build:*)",
+      "Bash(./probeHTTP:*)",
+      "Bash(tee:*)",
+      "Bash(cat:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
