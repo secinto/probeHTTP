@@ -7,7 +7,16 @@
       "Bash(go build:*)",
       "Bash(./probeHTTP:*)",
       "Bash(tee:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(/checkfix/tools/probeHTTP/probehttp:*)",
+      "Bash(for url in \"https://resetpw.raitec.at:443\" \"http://resetpw.raitec.at:80\" \"https://www.raitec.at:443\" \"https://raitec.at:443\" \"http://www.raitec.at:80\" \"http://raitec.at:80\" \"https://pra.raitec.at:443\")",
+      "Bash(echo:*)",
+      "Bash(curl:*)",
+      "Bash(done)",
+      "Bash(git stash:*)",
+      "Bash(./probehttp:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

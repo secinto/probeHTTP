@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+probehttp
 probeHTTP
 probeHTTP.exe
 
