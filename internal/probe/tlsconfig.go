@@ -122,3 +122,42 @@ func BuildTLSConfig(strategy TLSStrategy, cfg *config.Config) *tls.Config {
 
 	return tlsConfig
 }
+
+// StrategyWithProtocol pairs a TLS strategy with its target HTTP protocol
+type StrategyWithProtocol struct {
+	Strategy TLSStrategy
+	Protocol string
+}
+
+// GetOrderedStrategies returns TLS strategies ordered most-compatible first
+// for sequential fallback probing. The order prioritises reachability:
+//  1. TLS 1.2 Compatible + HTTP/1.1  (widest compatibility)
+//  2. TLS 1.2 Secure     + HTTP/2    (modern secure)
+//  3. TLS 1.3            + HTTP/2 or HTTP/3 (based on disableHTTP3)
+//  4. TLS 1.1            + HTTP/1.1  (legacy)
+//  5. TLS 1.0            + HTTP/1.1  (legacy)
+func GetOrderedStrategies(disableHTTP3 bool) []StrategyWithProtocol {
+	batch1, batch2 := GetTLSStrategies()
+
+	// batch1 order: [TLS 1.3, TLS 1.2 Secure, TLS 1.2 Compatible]
+	tls13 := batch1[0]
+	tls12Secure := batch1[1]
+	tls12Compat := batch1[2]
+
+	// batch2 order: [TLS 1.1, TLS 1.0]
+	tls11 := batch2[0]
+	tls10 := batch2[1]
+
+	tls13Protocol := "HTTP/2"
+	if !disableHTTP3 {
+		tls13Protocol = "HTTP/3"
+	}
+
+	return []StrategyWithProtocol{
+		{Strategy: tls12Compat, Protocol: "HTTP/1.1"},
+		{Strategy: tls12Secure, Protocol: "HTTP/2"},
+		{Strategy: tls13, Protocol: tls13Protocol},
+		{Strategy: tls11, Protocol: "HTTP/1.1"},
+		{Strategy: tls10, Protocol: "HTTP/1.1"},
+	}
+}
