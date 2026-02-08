@@ -13,7 +13,19 @@
       "Bash(curl -s https://github.com)",
       "Bash(curl -s https://example.com)",
       "mcp__morph-mcp__edit_file",
-      "Bash(go get:*)"
+      "Bash(go get:*)",
+      "Bash(go test -v -run TestEndToEnd)",
+      "Bash(go run:*)",
+      "Bash(tee:*)",
+      "Bash(/checkfix/tools/probeHTTP/probehttp:*)",
+      "Bash(for url in \"https://resetpw.raitec.at:443\" \"http://resetpw.raitec.at:80\" \"https://www.raitec.at:443\" \"https://raitec.at:443\" \"http://www.raitec.at:80\" \"http://raitec.at:80\" \"https://pra.raitec.at:443\")",
+      "Bash(echo:*)",
+      "Bash(curl:*)",
+      "Bash(done)",
+      "Bash(git stash:*)",
+      "Bash(./probehttp:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

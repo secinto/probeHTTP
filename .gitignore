@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+probehttp
 probeHTTP
 probeHTTP.exe
 
@@ -86,3 +87,4 @@ __debug_bin*
 # Local configuration files
 *.local
 config.local.*
+.claude/settings.local.json

@@ -129,6 +129,11 @@ func (p *Prober) probeURLOnce(ctx context.Context, probeURL string, originalInpu
 		return result
 	}
 
+	// Strip default ports so Go sends the correct Host header.
+	// Servers may reject requests with "Host: example.com:443" for HTTPS
+	// or "Host: example.com:80" for HTTP.
+	probeURL = stripDefaultPort(parsedURL)
+
 	// For HTTPS URLs, use parallel TLS attempts
 	if parsedURL.Scheme == "https" {
 		if p.config.DebugLogger != nil {
@@ -407,7 +412,9 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	return result
 }
 
-// probeURLWithParallelTLS performs parallel TLS attempts for HTTPS URLs
+// probeURLWithParallelTLS performs sequential TLS fallback for HTTPS URLs.
+// It tries strategies in compatibility order and returns the first successful
+// HTTP response. Only connection-level errors trigger fallback to the next strategy.
 func (p *Prober) probeURLWithParallelTLS(ctx context.Context, probeURL string, originalInput string) output.ProbeResult {
 	// Extract hostname for rate limiting
 	parsedURL, err := url.Parse(probeURL)
@@ -421,133 +428,91 @@ func (p *Prober) probeURLWithParallelTLS(ctx context.Context, probeURL string, o
 	}
 
 	hostname := parsedURL.Hostname()
-	limiter := p.client.GetLimiter(hostname)
-	
-	// Create timeout context for rate limiter
-	waitCtx, waitCancel := context.WithTimeout(ctx, time.Duration(p.config.RateLimitTimeout)*time.Second)
-	defer waitCancel()
-	
-	if err := limiter.Wait(waitCtx); err != nil {
-		if err == context.DeadlineExceeded {
+	strategies := GetOrderedStrategies(p.config.DisableHTTP3)
+
+	var allErrors []string
+
+	for i, sp := range strategies {
+		// Check context before each attempt
+		if ctx.Err() != nil {
 			return output.ProbeResult{
 				Timestamp: time.Now().Format(time.RFC3339),
 				Input:     originalInput,
 				Method:    "GET",
-				Error:     fmt.Sprintf("rate limit wait timeout after %ds", p.config.RateLimitTimeout),
+				Error:     "cancelled",
 			}
 		}
-		return output.ProbeResult{
-			Timestamp: time.Now().Format(time.RFC3339),
-			Input:     originalInput,
-			Method:    "GET",
-			Error:     fmt.Sprintf("rate limit wait cancelled: %v", err),
+
+		// Rate limit each actual connection attempt
+		limiter := p.client.GetLimiter(hostname)
+		waitCtx, waitCancel := context.WithTimeout(ctx, time.Duration(p.config.RateLimitTimeout)*time.Second)
+		if err := limiter.Wait(waitCtx); err != nil {
+			waitCancel()
+			if err == context.DeadlineExceeded {
+				return output.ProbeResult{
+					Timestamp: time.Now().Format(time.RFC3339),
+					Input:     originalInput,
+					Method:    "GET",
+					Error:     fmt.Sprintf("rate limit wait timeout after %ds", p.config.RateLimitTimeout),
+				}
+			}
+			return output.ProbeResult{
+				Timestamp: time.Now().Format(time.RFC3339),
+				Input:     originalInput,
+				Method:    "GET",
+				Error:     fmt.Sprintf("rate limit wait cancelled: %v", err),
+			}
 		}
-	}
-
-	// Get TLS strategies
-	batch1, batch2 := GetTLSStrategies()
-
-	// Determine protocols for Batch 1 based on HTTP/3 setting
-	var batch1Protocols []string
-	if p.config.DisableHTTP3 {
-		// Skip HTTP/3, try TLS 1.3 with HTTP/2 instead
-		batch1Protocols = []string{"HTTP/2", "HTTP/2", "HTTP/1.1"}
-	} else {
-		batch1Protocols = []string{"HTTP/3", "HTTP/2", "HTTP/1.1"}
-	}
-
-	// Try Batch 1 in parallel
-	result := p.tryTLSBatch(ctx, probeURL, originalInput, batch1, batch1Protocols)
-	if result.Error == "" {
-		return result
-	}
-
-	// All Batch 1 failed, try Batch 2 in parallel
-	return p.tryTLSBatch(ctx, probeURL, originalInput, batch2, []string{"HTTP/1.1", "HTTP/1.1"})
-}
-
-// tryTLSBatch tries a batch of TLS strategies in parallel
-func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput string, strategies []TLSStrategy, protocols []string) output.ProbeResult {
-	// Create context with TLS timeout
-	tlsCtx, cancel := context.WithTimeout(ctx, time.Duration(p.config.TLSHandshakeTimeout)*time.Second)
-	defer cancel()
-
-	if p.config.DebugLogger != nil {
-		p.config.DebugLogger.Info("starting TLS batch",
-			"url", probeURL,
-			"batch_size", len(strategies),
-			"timeout_seconds", p.config.TLSHandshakeTimeout,
-		)
-	}
-
-	// Create buffered result channel to prevent goroutine blocking
-	results := make(chan output.ProbeResult, len(strategies))
-	var wg sync.WaitGroup
-
-	// Launch parallel attempts
-	for i, strategy := range strategies {
-		protocol := "HTTP/1.1"
-		if i < len(protocols) {
-			protocol = protocols[i]
-		}
+		waitCancel()
 
 		if p.config.DebugLogger != nil {
-			p.config.DebugLogger.Debug("launching parallel attempt",
+			p.config.DebugLogger.Info("trying TLS strategy",
 				"url", probeURL,
-				"strategy", strategy.Name,
-				"protocol", protocol,
+				"strategy", sp.Strategy.Name,
+				"protocol", sp.Protocol,
 				"attempt", i+1,
+				"of", len(strategies),
 			)
 		}
 
-		wg.Add(1)
-		go func(s TLSStrategy, proto string) {
-			defer wg.Done()
-			
-			// Try to send result, but don't block if context is cancelled
-			select {
-			case results <- p.probeURLWithConfig(tlsCtx, probeURL, originalInput, s, proto):
-			case <-tlsCtx.Done():
-				// Context cancelled, don't block
-				return
+		// Create a per-attempt timeout context
+		tlsCtx, tlsCancel := context.WithTimeout(ctx, time.Duration(p.config.TLSHandshakeTimeout)*time.Second)
+		result := p.probeURLWithConfig(tlsCtx, probeURL, originalInput, sp.Strategy, sp.Protocol)
+		tlsCancel()
+
+		// Any HTTP response (even 4xx/5xx) means the host is reachable
+		if result.Error == "" {
+			return result
+		}
+
+		// Non-connection error — no point trying other strategies
+		if !isConnectionError(result.Error) {
+			if p.config.DebugLogger != nil {
+				p.config.DebugLogger.Debug("non-retryable error, stopping fallback",
+					"url", probeURL,
+					"strategy", sp.Strategy.Name,
+					"error", result.Error,
+				)
 			}
-		}(strategy, protocol)
-	}
+			return result
+		}
 
-	// Close results channel when all goroutines complete
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect first successful result
-	var firstSuccess output.ProbeResult
-	var allErrors []string
-	successFound := false
-
-	for result := range results {
-		if result.Error == "" && !successFound {
-			firstSuccess = result
-			successFound = true
-			cancel() // Cancel remaining attempts
-			
-			// Drain remaining results to prevent goroutine leaks
-			go func() {
-				for range results {
-					// Discard remaining results
-				}
-			}()
-			
-			return firstSuccess
-		} else if result.Error != "" {
-			allErrors = append(allErrors, result.Error)
+		// Connection error — record and try next strategy
+		allErrors = append(allErrors, fmt.Sprintf("%s/%s: %s", sp.Strategy.Name, sp.Protocol, result.Error))
+		if p.config.DebugLogger != nil {
+			p.config.DebugLogger.Debug("connection error, trying next strategy",
+				"url", probeURL,
+				"strategy", sp.Strategy.Name,
+				"protocol", sp.Protocol,
+				"error", result.Error,
+			)
 		}
 	}
 
-	// All attempts failed
+	// All strategies exhausted
 	errorMsg := fmt.Sprintf("All TLS attempts failed: %s", strings.Join(allErrors, "; "))
 	if p.config.DebugLogger != nil {
-		p.config.DebugLogger.Error("all TLS attempts failed",
+		p.config.DebugLogger.Error("all TLS strategies failed",
 			"url", probeURL,
 			"attempts", len(strategies),
 			"errors", allErrors,
@@ -559,6 +524,35 @@ func (p *Prober) tryTLSBatch(ctx context.Context, probeURL string, originalInput
 		Method:    "GET",
 		Error:     errorMsg,
 	}
+}
+
+// isConnectionError returns true if the error string indicates a connection-level
+// failure that warrants trying the next TLS strategy. Application-level errors
+// (context cancelled, URL parse, rate limit) return false — no point retrying.
+func isConnectionError(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	connectionPatterns := []string{
+		"tls:",
+		"tls_",
+		"handshake",
+		"connection refused",
+		"connection reset",
+		"i/o timeout",
+		"eof",
+		"certificate",
+		"no route to host",
+		"network unreachable",
+		"protocol",
+		"no such host",
+		"dial tcp",
+		"remote error",
+	}
+	for _, pattern := range connectionPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // probeURLWithConfig performs a single probe attempt with a specific TLS config and protocol
@@ -1145,6 +1139,18 @@ func normalizeHeaders(headers http.Header) map[string]string {
 		normalized[key] = strings.Join(v, ", ")
 	}
 	return normalized
+}
+
+// stripDefaultPort returns the URL string with the port removed when it matches
+// the scheme's default (80 for HTTP, 443 for HTTPS). This prevents Go's net/http
+// from sending "Host: example.com:443" which some servers reject.
+func stripDefaultPort(u *url.URL) string {
+	port := u.Port()
+	if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		// Rebuild with just the hostname (no port)
+		u.Host = u.Hostname()
+	}
+	return u.String()
 }
 
 // Ensure storage import is used
