@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(./probeHTTP)",
+      "Bash(./probeHTTP:*)",
+      "Bash(go test:*)",
+      "Bash(go tool cover:*)",
+      "Bash(timeout:*)",
+      "Bash(printf:*)",
+      "Read(//private/tmp/**)",
+      "Bash(cat:*)",
+      "Bash(curl -s https://github.com)",
+      "Bash(curl -s https://example.com)",
+      "mcp__morph-mcp__edit_file",
+      "Bash(go get:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
