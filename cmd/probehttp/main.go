@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -50,10 +49,9 @@ func main() {
 
 	// Initialize response storage directory if enabled
 	if cfg.StoreResponse {
-		responseDir := filepath.Join(cfg.StoreResponseDir, "response")
-		if err := os.MkdirAll(responseDir, 0755); err != nil {
+		if err := os.MkdirAll(cfg.StoreResponseDir, 0755); err != nil {
 			cfg.Logger.Error("failed to create response directory",
-				"path", responseDir,
+				"path", cfg.StoreResponseDir,
 				"error", err,
 			)
 			os.Exit(1)

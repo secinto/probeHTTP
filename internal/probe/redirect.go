@@ -9,18 +9,22 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"probeHTTP/internal/storage"
 )
 
-// followRedirects manually follows HTTP redirects and captures the status code and host chains
-// Returns the final response, complete status code chain, host chain, and any error
-func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response, maxRedirects int, startStep int, initialHostname string, buf *strings.Builder) (*http.Response, []int, []string, error) {
+// followRedirects manually follows HTTP redirects and captures the status code and host chains.
+// Returns the final response, complete status code chain, host chain, per-hop ChainEntries, and any error.
+// ChainEntries are only populated when StoreResponse is enabled.
+func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response, maxRedirects int, startStep int, initialHostname string, buf *strings.Builder) (*http.Response, []int, []string, []storage.ChainEntry, error) {
 	statusChain := []int{initialResp.StatusCode}
 	hostChain := []string{initialHostname}
+	var chainEntries []storage.ChainEntry
 	currentResp := initialResp
 
 	// Check if initial response is not a redirect
 	if currentResp.StatusCode < 300 || currentResp.StatusCode >= 400 {
-		return currentResp, statusChain, hostChain, nil
+		return currentResp, statusChain, hostChain, chainEntries, nil
 	}
 
 	redirectCount := 0
@@ -29,20 +33,20 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 		// Check context cancellation
 		select {
 		case <-ctx.Done():
-			return currentResp, statusChain, hostChain, ctx.Err()
+			return currentResp, statusChain, hostChain, chainEntries, ctx.Err()
 		default:
 		}
 
 		// Check if we've hit max redirects
 		if redirectCount >= maxRedirects {
-			return currentResp, statusChain, hostChain, fmt.Errorf("stopped after %d redirects", maxRedirects)
+			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("stopped after %d redirects", maxRedirects)
 		}
 
 		// Get redirect location
 		location := currentResp.Header.Get("Location")
 		if location == "" {
 			// No location header, stop here
-			return currentResp, statusChain, hostChain, nil
+			return currentResp, statusChain, hostChain, chainEntries, nil
 		}
 
 		// Close previous response body
@@ -51,7 +55,7 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 		// Parse location URL
 		nextURL, err := currentResp.Request.URL.Parse(location)
 		if err != nil {
-			return currentResp, statusChain, hostChain, fmt.Errorf("invalid redirect location: %v", err)
+			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("invalid redirect location: %v", err)
 		}
 
 		// Normalize port when scheme changes (e.g., http:80 -> https should use 443)
@@ -69,17 +73,23 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 					buf.WriteString(warning)
 				}
 			}
-			return currentResp, statusChain, hostChain, fmt.Errorf("cross-host redirect blocked: %s → %s", initialHostname, nextHostname)
+			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("cross-host redirect blocked: %s → %s", initialHostname, nextHostname)
 		}
 
 		// Make request to next URL
 		req, err := http.NewRequestWithContext(ctx, "GET", nextURL.String(), nil)
 		if err != nil {
-			return currentResp, statusChain, hostChain, fmt.Errorf("failed to create redirect request: %v", err)
+			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("failed to create redirect request: %v", err)
 		}
 
 		// Copy headers from original request
 		req.Header = currentResp.Request.Header
+
+		// Capture raw request for storage before sending
+		var rawReq string
+		if p.config.StoreResponse {
+			rawReq = formatRawRequest(req)
+		}
 
 		// Debug: log redirect request with cross-host warning
 		stepNum++
@@ -96,19 +106,27 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 		nextResp, err := p.client.GetHTTPClient().Do(req)
 		requestElapsed := time.Since(requestStart)
 		if err != nil {
-			return currentResp, statusChain, hostChain, fmt.Errorf("redirect request failed: %v", err)
+			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("redirect request failed: %v", err)
 		}
 
-		// Read body for debug logging
+		// Always read body when storing responses or in debug mode
 		var nextBody []byte
-		if p.config.Debug {
-			// Use TeeReader for efficient reading
+		if p.config.StoreResponse || p.config.Debug {
 			var bodyBuffer bytes.Buffer
 			bodyReader := io.TeeReader(nextResp.Body, &bodyBuffer)
 			nextBody, _ = io.ReadAll(io.LimitReader(bodyReader, p.config.MaxBodySize))
 			nextResp.Body.Close()
 			// Recreate body for further processing
 			nextResp.Body = io.NopCloser(bytes.NewReader(nextBody))
+		}
+
+		// Build chain entry for storage
+		if p.config.StoreResponse {
+			chainEntries = append(chainEntries, storage.ChainEntry{
+				RawRequest:  rawReq,
+				RawResponse: formatRawResponse(nextResp),
+				Body:        nextBody,
+			})
 		}
 
 		// Debug: log redirect response
@@ -122,7 +140,7 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 
 		// Check if we've reached a non-redirect response
 		if nextResp.StatusCode < 300 || nextResp.StatusCode >= 400 {
-			return nextResp, statusChain, hostChain, nil
+			return nextResp, statusChain, hostChain, chainEntries, nil
 		}
 	}
 }
