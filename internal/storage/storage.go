@@ -8,13 +8,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
-// GenerateFilename creates a SHA1 hash-based filename for the request
-// Format: SHA1(METHOD:URL)
-func GenerateFilename(method, urlStr string) string {
-	data := fmt.Sprintf("%s:%s", method, urlStr)
-	hash := sha1.Sum([]byte(data))
+// ChainEntry carries per-hop request/response data for the redirect chain.
+// Each hop in the redirect chain produces one ChainEntry.
+type ChainEntry struct {
+	RawRequest  string // formatted by formatRawRequest (request line + headers)
+	RawResponse string // status line + headers via formatRawResponse
+	Body        []byte // response body for this hop
+}
+
+// GenerateFilename creates a SHA1 hash-based filename from the URL.
+// Format: SHA1(URL) — matches HTTPx convention (no method prefix).
+func GenerateFilename(urlStr string) string {
+	hash := sha1.Sum([]byte(urlStr))
 	return hex.EncodeToString(hash[:])
 }
 
@@ -34,11 +42,11 @@ func SanitizeHost(host string) string {
 	return sanitized
 }
 
-// BuildStoragePath creates the full path for storing a response
-// Structure: {baseDir}/response/{sanitized_host}/{hash}.txt
+// BuildStoragePath creates the full path for storing a response.
+// Structure: {baseDir}/{sanitized_host}/{hash}.txt — matches HTTPx layout (no response/ subdir).
 func BuildStoragePath(baseDir, host, filename string) string {
 	sanitizedHost := SanitizeHost(host)
-	return filepath.Join(baseDir, "response", sanitizedHost, filename+".txt")
+	return filepath.Join(baseDir, sanitizedHost, filename+".txt")
 }
 
 // EnsureDir creates a directory and all parent directories if they don't exist
@@ -47,10 +55,10 @@ func EnsureDir(path string) error {
 	return os.MkdirAll(dir, 0755)
 }
 
-// StoreResponse writes the response data to disk
-// Returns the path where the file was stored
-func StoreResponse(baseDir string, parsedURL *url.URL, method string, data []byte) (string, error) {
-	filename := GenerateFilename(method, parsedURL.String())
+// StoreResponse writes the response data to disk.
+// Returns the path where the file was stored.
+func StoreResponse(baseDir string, parsedURL *url.URL, data []byte) (string, error) {
+	filename := GenerateFilename(parsedURL.String())
 	storagePath := BuildStoragePath(baseDir, parsedURL.Host, filename)
 
 	if err := EnsureDir(storagePath); err != nil {
@@ -64,44 +72,65 @@ func StoreResponse(baseDir string, parsedURL *url.URL, method string, data []byt
 	return storagePath, nil
 }
 
-// FormatStoredResponse formats the stored response file content
-// Includes: raw request, raw response headers, redirect chain (if any), final URL, response body
-func FormatStoredResponse(rawRequest, rawResponseHeaders string, redirectChain []string, body []byte, finalURL string) []byte {
+// FormatStoredResponse formats the stored response file content in raw HTTP format.
+// Output matches HTTPx: raw request/response pairs per hop, final URL on last line.
+//
+// Format per hop:
+//
+//	GET / HTTP/1.1\nHost: ...\n\n\nHTTP/1.1 302 Found\n...\n\n[body]\n\n
+//
+// Final line: bare URL
+func FormatStoredResponse(chain []ChainEntry, finalURL string) []byte {
 	var builder strings.Builder
 
-	// Write raw request
-	builder.WriteString("=== REQUEST ===\n")
-	builder.WriteString(rawRequest)
-	if !strings.HasSuffix(rawRequest, "\n") {
+	for i, entry := range chain {
+		// Write raw request (already ends with \n after last header)
+		builder.WriteString(entry.RawRequest)
+		// Blank line after request headers (end of request)
 		builder.WriteString("\n")
-	}
-	builder.WriteString("\n")
 
-	// Write response headers
-	builder.WriteString("=== RESPONSE HEADERS ===\n")
-	builder.WriteString(rawResponseHeaders)
-	if !strings.HasSuffix(rawResponseHeaders, "\n") {
+		// Write raw response headers (already ends with \n after last header)
+		builder.WriteString(entry.RawResponse)
+		// Blank line after response headers (end of headers, before body)
 		builder.WriteString("\n")
-	}
-	builder.WriteString("\n")
 
-	// Write redirect chain if present
-	if len(redirectChain) > 1 {
-		builder.WriteString("=== REDIRECT CHAIN ===\n")
-		for i, redirect := range redirectChain {
-			builder.WriteString(fmt.Sprintf("[%d] %s\n", i+1, redirect))
+		// Write body
+		if len(entry.Body) > 0 {
+			builder.Write(entry.Body)
 		}
-		builder.WriteString("\n")
+
+		// Separator between hops (blank line before next hop's request)
+		if i < len(chain)-1 {
+			builder.WriteString("\n\n")
+		}
 	}
 
-	// Write final URL
-	builder.WriteString("=== FINAL URL ===\n")
-	builder.WriteString(finalURL)
+	// Final URL on last line
 	builder.WriteString("\n\n")
-
-	// Write response body
-	builder.WriteString("=== RESPONSE BODY ===\n")
-	builder.Write(body)
+	builder.WriteString(finalURL)
 
 	return []byte(builder.String())
+}
+
+// indexMu protects concurrent writes to index.txt
+var indexMu sync.Mutex
+
+// AppendToIndex appends a line to the index.txt file in the storage directory.
+// Format matches HTTPx: {relative_path} {url} ({statusCode} {statusText})
+// Example: www.hall.ag_80/85c766da...c4.txt http://www.hall.ag:80 (200 OK)
+func AppendToIndex(baseDir, storagePath, urlStr string, statusCode int, statusText string) error {
+	indexMu.Lock()
+	defer indexMu.Unlock()
+
+	indexPath := filepath.Join(baseDir, "index.txt")
+	relPath, _ := filepath.Rel(baseDir, storagePath)
+	line := fmt.Sprintf("%s %s (%d %s)\n", relPath, urlStr, statusCode, statusText)
+
+	f, err := os.OpenFile(indexPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(line)
+	return err
 }
