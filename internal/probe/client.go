@@ -2,6 +2,7 @@ package probe
 
 import (
 	"crypto/tls"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ type Client struct {
 	mu             sync.Mutex
 	config         *config.Config
 	http3Transport *http3.Transport // Track HTTP/3 transport for cleanup
+	ipTracker      *IPTracker
 }
 
 // NewClient creates a new HTTP client with optimized settings
@@ -84,6 +86,19 @@ func (c *Client) GetLimiter(host string) *rate.Limiter {
 	limiter := rate.NewLimiter(10, 1)
 	c.limiters[host] = limiter
 	return limiter
+}
+
+// SetIPTracker sets the IP tracker for recording resolved IPs
+func (c *Client) SetIPTracker(tracker *IPTracker) {
+	c.ipTracker = tracker
+	// Update the default transport's DialContext
+	if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
+		dialer := &net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
+		transport.DialContext = tracker.DialContext(dialer)
+	}
 }
 
 // Note: Rate limiting is done directly in prober.go using limiter.Wait(ctx)

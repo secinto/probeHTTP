@@ -88,3 +88,4 @@ __debug_bin*
 *.local
 config.local.*
 .claude/settings.local.json
+main

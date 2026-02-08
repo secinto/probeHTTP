@@ -34,6 +34,12 @@ type Config struct {
 	DisableHTTP3       bool  // NEW: Disable HTTP/3 (QUIC) support
 	DebugLogFile       string // NEW: Debug log file path (optional)
 	Version            bool   // NEW: Show version information
+	// Feature detection options
+	ResolveIP      bool     // Resolve and report IP addresses
+	DetectHSTS     bool     // Detect HSTS headers
+	TechDetect     bool     // Enable technology detection
+	DetectCDN      bool     // Enable CDN detection
+	DetectCNAME    bool     // Enable CNAME resolution
 	// Storage options
 	StoreResponse         bool   // Store HTTP responses to disk
 	StoreResponseDir      string // Directory for stored responses
@@ -123,6 +129,17 @@ func ParseFlags() (*Config, error) {
 	flag.BoolVar(&cfg.IncludeResponseHeader, "include-response-header", false, "Include response headers in JSON output")
 	flag.BoolVar(&cfg.IncludeResponse, "irr", false, "Include full request/response in JSON output")
 	flag.BoolVar(&cfg.IncludeResponse, "include-response", false, "Include full request/response in JSON output")
+	// Feature detection flags
+	flag.BoolVar(&cfg.ResolveIP, "rip", false, "Resolve and include IP address in output")
+	flag.BoolVar(&cfg.ResolveIP, "resolve-ip", false, "Resolve and include IP address in output")
+	flag.BoolVar(&cfg.DetectHSTS, "hsts", false, "Detect and report HSTS headers")
+	flag.BoolVar(&cfg.DetectHSTS, "detect-hsts", false, "Detect and report HSTS headers")
+	flag.BoolVar(&cfg.TechDetect, "td", false, "Enable technology detection using wappalyzer")
+	flag.BoolVar(&cfg.TechDetect, "tech-detect", false, "Enable technology detection using wappalyzer")
+	flag.BoolVar(&cfg.DetectCDN, "cdn", false, "Detect CDN from response headers")
+	flag.BoolVar(&cfg.DetectCDN, "detect-cdn", false, "Detect CDN from response headers")
+	flag.BoolVar(&cfg.DetectCNAME, "cname", false, "Resolve and report CNAME records")
+	flag.BoolVar(&cfg.DetectCNAME, "detect-cname", false, "Resolve and report CNAME records")
 
 	flag.Parse()
 

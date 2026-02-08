@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,18 +15,23 @@ import (
 	"sync"
 	"time"
 
+	"probeHTTP/internal/cdn"
 	"probeHTTP/internal/config"
 	"probeHTTP/internal/hash"
 	"probeHTTP/internal/output"
 	"probeHTTP/internal/parser"
 	"probeHTTP/internal/storage"
+	"probeHTTP/internal/tech"
 	"probeHTTP/pkg/useragent"
 )
 
 // Prober handles HTTP probing operations
 type Prober struct {
-	client *Client
-	config *config.Config
+	client       *Client
+	config       *config.Config
+	ipTracker    *IPTracker
+	techDetector *tech.Detector
+	cnameCache   sync.Map // hostname -> CNAME string
 	// Mutex for atomic stderr writes when flushing debug buffers
 	stderrMutex  sync.Mutex
 	cleanupFuncs []func() error
@@ -34,11 +40,24 @@ type Prober struct {
 
 // NewProber creates a new Prober instance
 func NewProber(cfg *config.Config) *Prober {
-	return &Prober{
+	p := &Prober{
 		client:       NewClient(cfg),
 		config:       cfg,
 		cleanupFuncs: make([]func() error, 0),
 	}
+	if cfg.ResolveIP {
+		p.ipTracker = NewIPTracker()
+		p.client.SetIPTracker(p.ipTracker)
+	}
+	if cfg.TechDetect {
+		detector, err := tech.NewDetector()
+		if err != nil {
+			cfg.Logger.Warn("failed to initialize tech detector", "error", err)
+		} else {
+			p.techDetector = detector
+		}
+	}
+	return p
 }
 
 // Close cleans up all resources used by the prober
@@ -180,12 +199,27 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	// Extract hostname for rate limiting
 	hostname := parsedURL.Hostname()
 
+	// CNAME resolution (early, before HTTP request)
+	if p.config.DetectCNAME {
+		if cachedCNAME, ok := p.cnameCache.Load(hostname); ok {
+			if cname := cachedCNAME.(string); cname != "" && cname != hostname+"." {
+				result.CNAME = strings.TrimSuffix(cname, ".")
+			}
+		} else {
+			cname, lookupErr := net.LookupCNAME(hostname)
+			if lookupErr == nil && cname != "" && cname != hostname+"." {
+				result.CNAME = strings.TrimSuffix(cname, ".")
+			}
+			p.cnameCache.Store(hostname, cname)
+		}
+	}
+
 	// Apply rate limiting per host with timeout
 	limiter := p.client.GetLimiter(hostname)
-	
+
 	waitCtx, waitCancel := context.WithTimeout(ctx, time.Duration(p.config.RateLimitTimeout)*time.Second)
 	defer waitCancel()
-	
+
 	if err := limiter.Wait(waitCtx); err != nil {
 		if err == context.DeadlineExceeded {
 			result.Error = fmt.Sprintf("rate limit wait timeout after %ds", p.config.RateLimitTimeout)
@@ -368,6 +402,35 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	bodyStr := string(initialBody)
 	result.Title = parser.ExtractTitle(bodyStr)
 	result.Words, result.Lines = parser.CountWordsAndLines(bodyStr)
+
+	// Resolve IP address
+	if p.ipTracker != nil {
+		ip := p.ipTracker.GetIP(result.Host)
+		if ip != "" {
+			result.IP = ip
+			result.HostIP = ip
+		}
+	}
+
+	// HSTS detection
+	if p.config.DetectHSTS && finalResp != nil {
+		if hstsHeader := finalResp.Header.Get("Strict-Transport-Security"); hstsHeader != "" {
+			result.HSTS = true
+			result.HSTSHeader = hstsHeader
+		}
+	}
+
+	// Technology detection
+	if p.techDetector != nil {
+		result.Technologies = p.techDetector.Detect(finalResp.Header, initialBody)
+	}
+
+	// CDN detection
+	if p.config.DetectCDN {
+		isCDN, cdnName := cdn.DetectCDN(finalResp.Header)
+		result.CDN = isCDN
+		result.CDNName = cdnName
+	}
 
 	// Handle response storage and JSON output options
 	if p.config.IncludeResponseHeader {
@@ -584,7 +647,7 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 	// Create appropriate client based on protocol
 	var httpClient *http.Client
 	var cleanup func()
-	
+
 	switch protocol {
 	case "HTTP/3":
 		client, transport := NewHTTP3Client(p.config, tlsConfig)
@@ -597,6 +660,12 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		}
 	case "HTTP/2":
 		httpClient = NewHTTP2Client(p.config, tlsConfig)
+		if p.ipTracker != nil {
+			if transport, ok := httpClient.Transport.(*http.Transport); ok {
+				dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+				transport.DialContext = p.ipTracker.DialContext(dialer)
+			}
+		}
 		cleanup = func() {
 			if transport, ok := httpClient.Transport.(*http.Transport); ok {
 				transport.CloseIdleConnections()
@@ -607,6 +676,12 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		}
 	default: // HTTP/1.1
 		httpClient = NewHTTP11Client(p.config, tlsConfig)
+		if p.ipTracker != nil {
+			if transport, ok := httpClient.Transport.(*http.Transport); ok {
+				dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+				transport.DialContext = p.ipTracker.DialContext(dialer)
+			}
+		}
 		cleanup = func() {
 			if transport, ok := httpClient.Transport.(*http.Transport); ok {
 				transport.CloseIdleConnections()
@@ -616,7 +691,7 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 			p.config.DebugLogger.Debug("created HTTP/1.1 client", "url", probeURL)
 		}
 	}
-	
+
 	// Ensure cleanup happens
 	if cleanup != nil {
 		defer cleanup()
@@ -630,6 +705,22 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 			p.config.DebugLogger.Error("failed to parse URL", "url", probeURL, "error", err)
 		}
 		return result
+	}
+
+	// CNAME resolution (early, before HTTP request)
+	if p.config.DetectCNAME {
+		cnameHost := parsedURL.Hostname()
+		if cachedCNAME, ok := p.cnameCache.Load(cnameHost); ok {
+			if cname := cachedCNAME.(string); cname != "" && cname != cnameHost+"." {
+				result.CNAME = strings.TrimSuffix(cname, ".")
+			}
+		} else {
+			cname, lookupErr := net.LookupCNAME(cnameHost)
+			if lookupErr == nil && cname != "" && cname != cnameHost+"." {
+				result.CNAME = strings.TrimSuffix(cname, ".")
+			}
+			p.cnameCache.Store(cnameHost, cname)
+		}
 	}
 
 	// Debug: print separator at start of probe
@@ -699,6 +790,10 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 	if resp.TLS != nil {
 		result.TLSVersion = getTLSVersionString(resp.TLS.Version)
 		result.CipherSuite = tls.CipherSuiteName(resp.TLS.CipherSuite)
+		result.TLS = &output.TLSInfo{
+			Version: result.TLSVersion,
+			Cipher:  result.CipherSuite,
+		}
 	}
 
 	// Read response body
@@ -819,6 +914,35 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 	bodyStr := string(initialBody)
 	result.Title = parser.ExtractTitle(bodyStr)
 	result.Words, result.Lines = parser.CountWordsAndLines(bodyStr)
+
+	// Resolve IP address
+	if p.ipTracker != nil {
+		ip := p.ipTracker.GetIP(result.Host)
+		if ip != "" {
+			result.IP = ip
+			result.HostIP = ip
+		}
+	}
+
+	// HSTS detection
+	if p.config.DetectHSTS && finalResp != nil {
+		if hstsHeader := finalResp.Header.Get("Strict-Transport-Security"); hstsHeader != "" {
+			result.HSTS = true
+			result.HSTSHeader = hstsHeader
+		}
+	}
+
+	// Technology detection
+	if p.techDetector != nil {
+		result.Technologies = p.techDetector.Detect(finalResp.Header, initialBody)
+	}
+
+	// CDN detection
+	if p.config.DetectCDN {
+		isCDN, cdnName := cdn.DetectCDN(finalResp.Header)
+		result.CDN = isCDN
+		result.CDNName = cdnName
+	}
 
 	// Handle response storage and JSON output options
 	if p.config.IncludeResponseHeader {
