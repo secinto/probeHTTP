@@ -25,9 +25,20 @@
       "Bash(git stash:*)",
       "Bash(./probehttp:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "WebFetch(domain:docs.projectdiscovery.io)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:highon.coffee)",
+      "WebFetch(domain:deepwiki.com)",
+      "Bash(bd create:*)",
+      "Bash(bd update probeHTTP-3qo --description=\"probeHTTP''s response storage diverges from HTTPx in 6 areas: directory layout \\(extra response/ subdir\\), no index.txt, hash includes method prefix, custom === SECTION === format instead of raw HTTP, redirect chain is summarized instead of full req/resp pairs, and final URL is in a section instead of bare last line. All 6 must match HTTPx so downstream tools consume either tool''s output interchangeably.\" --status=in_progress)",
+      "Bash(bd dep add:*)",
+      "Bash(bd close:*)",
+      "Bash(bd list:*)",
+      "Bash(bd update:*)"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "outputStyle": "Explanatory"
 }
