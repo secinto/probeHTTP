@@ -46,6 +46,8 @@ type ProbeResult struct {
 	CDNName          string   `json:"cdn_name,omitempty"`
 	CNAME            string   `json:"cname,omitempty"`
 	Error            string   `json:"error,omitempty"`
+	SNIRequired      bool     `json:"sni_required,omitempty"`
+	Diagnostic       string   `json:"diagnostic,omitempty"`
 	// Storage-related fields (optional, based on flags)
 	ResponseHeaders    map[string]string `json:"response_headers,omitempty"`
 	RequestHeaders     map[string]string `json:"request_headers,omitempty"`

@@ -204,8 +204,14 @@ func main() {
 		completed++
 		updateStatusBar(result.URL)
 
-		// Skip results with errors in JSON output
+		// Skip results with errors in JSON output (but emit diagnostic results)
 		if result.Error != "" {
+			if result.SNIRequired {
+				// Emit SNI diagnostic results — these are valuable security intelligence
+				if diagJSON, err := json.Marshal(result); err == nil {
+					fmt.Fprintln(outputWriter, string(diagJSON))
+				}
+			}
 			errorCount++
 			continue
 		}

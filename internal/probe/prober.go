@@ -607,12 +607,68 @@ func (p *Prober) probeURLWithParallelTLS(ctx context.Context, probeURL string, o
 			"errors", allErrors,
 		)
 	}
-	return output.ProbeResult{
+
+	result := output.ProbeResult{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Input:     originalInput,
 		Method:    "GET",
 		Error:     errorMsg,
 	}
+
+	// Check if this looks like an SNI requirement (bare IP, TLS rejection)
+	if IsSNIRequired(hostname, allErrors) {
+		result.SNIRequired = true
+		result.Diagnostic = "TLS handshake rejected for bare IP; server likely requires SNI (Server Name Indication)"
+		result.URL = probeURL
+		result.Scheme = parsedURL.Scheme
+		result.Host = hostname
+		port := parsedURL.Port()
+		if port == "" {
+			port = "443"
+		}
+		result.Port = port
+	}
+
+	return result
+}
+
+// IsSNIRequired returns true if the target is a bare IP address and all TLS errors
+// indicate handshake rejection (not connectivity issues). This diagnoses servers
+// that require SNI (Server Name Indication) in the TLS ClientHello.
+func IsSNIRequired(hostname string, allErrors []string) bool {
+	// Must be a bare IP address (no hostname to send as SNI)
+	if net.ParseIP(hostname) == nil {
+		return false
+	}
+
+	if len(allErrors) == 0 {
+		return false
+	}
+
+	// Check for TLS handshake rejection indicators
+	hasTLSRejection := false
+	for _, errMsg := range allErrors {
+		lower := strings.ToLower(errMsg)
+		// Connectivity issues disqualify SNI diagnosis
+		connectivityPatterns := []string{
+			"connection refused",
+			"timeout",
+			"no route to host",
+			"no such host",
+			"network unreachable",
+			"eof",
+		}
+		for _, pattern := range connectivityPatterns {
+			if strings.Contains(lower, pattern) {
+				return false
+			}
+		}
+		if strings.Contains(lower, "handshake failure") || strings.Contains(lower, "remote error") {
+			hasTLSRejection = true
+		}
+	}
+
+	return hasTLSRejection
 }
 
 // isConnectionError returns true if the error string indicates a connection-level
