@@ -9,12 +9,15 @@
 #
 #   Install options:
 #     --install, -i: Install binary to GOPATH/bin after building
+#   Test options:
+#     -T, --skip-tests: Skip running tests before build
 #
 # Examples:
 #   ./build-static.sh                # Build for host OS
 #   ./build-static.sh -all           # Build for all platforms
 #   ./build-static.sh --install      # Build and install to GOPATH/bin
 #   ./build-static.sh -all --install # Build all platforms and install native binary
+#   ./build-static.sh -T             # Build without running tests
 
 set -e  # Exit on error
 
@@ -33,6 +36,7 @@ MAIN_PACKAGE="./cmd/probehttp"
 # Parse command line arguments
 BUILD_ALL=false
 INSTALL=false
+SKIP_TESTS=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -42,6 +46,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --install|-i)
             INSTALL=true
+            shift
+            ;;
+        -T|--skip-tests)
+            SKIP_TESTS=true
             shift
             ;;
         -h|--help)
@@ -54,11 +62,15 @@ while [[ $# -gt 0 ]]; do
             echo "Install options:"
             echo "  --install, -i     Install binary to GOPATH/bin after building"
             echo ""
+            echo "Test options:"
+            echo "  -T, --skip-tests  Skip running tests before build"
+            echo ""
             echo "Examples:"
             echo "  $0                    # Build for host OS"
             echo "  $0 -all               # Build for all platforms"
             echo "  $0 --install          # Build and install to GOPATH/bin"
             echo "  $0 -all --install     # Build all platforms and install native binary"
+            echo "  $0 -T                 # Build without running tests"
             exit 0
             ;;
         *)
@@ -113,6 +125,18 @@ echo "Version: ${VERSION}"
 echo "Commit: ${COMMIT_HASH}"
 echo "Build Time: ${BUILD_TIME}"
 echo ""
+
+# Run tests before building
+if [[ "$SKIP_TESTS" == false ]]; then
+    echo -e "${BLUE}Running tests...${NC}"
+    if go test ./... ; then
+        echo -e "${GREEN}All tests passed${NC}"
+    else
+        echo -e "${RED}Tests failed! Aborting build.${NC}"
+        exit 1
+    fi
+    echo ""
+fi
 
 # Create build directory
 mkdir -p "${BUILD_DIR}"
