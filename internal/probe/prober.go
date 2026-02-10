@@ -626,7 +626,7 @@ func isConnectionError(errMsg string) bool {
 		"handshake",
 		"connection refused",
 		"connection reset",
-		"i/o timeout",
+		"timeout",
 		"eof",
 		"certificate",
 		"no route to host",
