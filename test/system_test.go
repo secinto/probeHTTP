@@ -432,6 +432,50 @@ func TestBinary_Help(t *testing.T) {
 			t.Errorf("help output missing flag: %s", flag)
 		}
 	}
+
+	// Verify group headers appear in the output
+	expectedGroups := []string{
+		"INPUT:",
+		"OUTPUT:",
+		"PROBES:",
+		"CONFIGURATION:",
+		"RATE-LIMIT:",
+		"DEBUG:",
+		"MISCELLANEOUS:",
+	}
+
+	for _, group := range expectedGroups {
+		if !strings.Contains(outputStr, group) {
+			t.Errorf("help output missing group header: %s", group)
+		}
+	}
+
+	// Verify short+long flags appear on the same line
+	lines := strings.Split(outputStr, "\n")
+	shortLongPairs := []struct {
+		short string
+		long  string
+	}{
+		{"-td,", "-tech-detect"},
+		{"-cdn,", "-detect-cdn"},
+		{"-i,", "-input"},
+		{"-o,", "-output"},
+		{"-fr,", "-follow-redirects"},
+		{"-c,", "-concurrency"},
+	}
+
+	for _, pair := range shortLongPairs {
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, pair.short) && strings.Contains(line, pair.long) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %s and %s on the same line in help output", pair.short, pair.long)
+		}
+	}
 }
 
 // TestBinary_BasicExecution tests running the compiled binary

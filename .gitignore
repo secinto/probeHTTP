@@ -89,3 +89,4 @@ __debug_bin*
 config.local.*
 .claude/settings.local.json
 main
+probehttp

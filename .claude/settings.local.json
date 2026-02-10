@@ -35,7 +35,10 @@
       "Bash(bd dep add:*)",
       "Bash(bd close:*)",
       "Bash(bd list:*)",
-      "Bash(bd update:*)"
+      "Bash(bd update:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []
