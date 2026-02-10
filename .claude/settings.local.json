@@ -38,7 +38,15 @@
       "Bash(bd update:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(make fmt:*)",
+      "Bash(go install:*)",
+      "Bash(make build:*)",
+      "Bash(bash ./scripts/build-static.sh:*)",
+      "Bash(./bin/checkfix_agent-linux-amd64:*)",
+      "Bash(./checkfix_agent:*)",
+      "Bash(ls:*)",
+      "Bash(make:*)"
     ],
     "deny": [],
     "ask": []

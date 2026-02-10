@@ -225,9 +225,20 @@ func main() {
 		// Write JSON to output
 		fmt.Fprintln(outputWriter, string(jsonData))
 
-		// If output file is specified AND status is successful (2XX), print URL to console
+		// If output file is specified AND status is successful (2XX), print summary to console
 		if cfg.OutputFile != "" && result.StatusCode >= 200 && result.StatusCode < 300 {
-			fmt.Println(result.FinalURL)
+			// Build status chain string: [301 -> 302 -> 200]
+			chainParts := make([]string, len(result.ChainStatusCodes))
+			for i, code := range result.ChainStatusCodes {
+				chainParts[i] = fmt.Sprintf("%d", code)
+			}
+			chainStr := "[" + strings.Join(chainParts, " -> ") + "]"
+
+			if result.URL != result.FinalURL {
+				fmt.Printf("%s -> %s %s\n", result.URL, result.FinalURL, chainStr)
+			} else {
+				fmt.Printf("%s %s\n", result.URL, chainStr)
+			}
 		}
 
 		successCount++

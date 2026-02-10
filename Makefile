@@ -1,4 +1,4 @@
-.PHONY: build build-static build-static-all build-all test bench fuzz lint clean install coverage help
+.PHONY: build build-static build-static-all build-all test bench fuzz lint clean install coverage bump-version help
 
 # Variables
 BINARY_NAME=probeHTTP
@@ -8,6 +8,9 @@ GOFLAGS=-v
 COVERAGE_FILE=coverage.out
 # Version information
 VERSION ?= 1.0.0
+VERSION_GO_FILE := pkg/version/version.go
+VERSION_BUILD_SCRIPT := scripts/build-static.sh
+SKIP_GO_VERSION_UPDATE := true
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -ldflags "-X probeHTTP/pkg/version.Version=$(VERSION) -X probeHTTP/pkg/version.GitCommit=$(GIT_COMMIT) -X probeHTTP/pkg/version.BuildDate=$(BUILD_DATE)"
@@ -115,6 +118,38 @@ version:
 	@echo "Git Commit: $(GIT_COMMIT)"
 	@echo "Build Date: $(BUILD_DATE)"
 
+# Bump version across Makefile, build script, and Go source
+bump-version:
+	@if [ -n "$(V)" ]; then \
+		NEW_VERSION="$(V)"; \
+	else \
+		MAJOR=$$(echo "$(VERSION)" | cut -d. -f1); \
+		MINOR=$$(echo "$(VERSION)" | cut -d. -f2); \
+		PATCH=$$(echo "$(VERSION)" | cut -d. -f3); \
+		NEW_VERSION="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
+	fi; \
+	if ! echo "$$NEW_VERSION" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$$'; then \
+		echo "Error: version '$$NEW_VERSION' must be N.N.N format"; exit 1; \
+	fi; \
+	V_MAJOR=$$(echo "$$NEW_VERSION" | cut -d. -f1); \
+	V_MINOR=$$(echo "$$NEW_VERSION" | cut -d. -f2); \
+	V_PATCH=$$(echo "$$NEW_VERSION" | cut -d. -f3); \
+	if [ "$$V_MAJOR" -gt 100 ] || [ "$$V_MINOR" -gt 100 ] || [ "$$V_PATCH" -gt 100 ]; then \
+		echo "Error: version components must be 0-100, got '$$NEW_VERSION'"; exit 1; \
+	fi; \
+	echo "Bumping version: $(VERSION) -> $$NEW_VERSION"; \
+	sed -i.bak 's/^VERSION ?= .*/VERSION ?= '"$$NEW_VERSION"'/' Makefile && rm -f Makefile.bak; \
+	echo "  Updated Makefile"; \
+	sed -i.bak 's/^BASE_VERSION=".*"/BASE_VERSION="'"$$NEW_VERSION"'"/' $(VERSION_BUILD_SCRIPT) && rm -f $(VERSION_BUILD_SCRIPT).bak; \
+	echo "  Updated $(VERSION_BUILD_SCRIPT)"; \
+	if [ "$(SKIP_GO_VERSION_UPDATE)" = "true" ]; then \
+		echo "  Skipped $(VERSION_GO_FILE) (version set via ldflags only)"; \
+	else \
+		sed -i.bak 's/VERSION *= *"[^"]*"/VERSION = "'"$$NEW_VERSION"'"/' $(VERSION_GO_FILE) && rm -f $(VERSION_GO_FILE).bak; \
+		echo "  Updated $(VERSION_GO_FILE)"; \
+	fi; \
+	echo "Version bumped to $$NEW_VERSION"
+
 # Show help
 help:
 	@echo "Makefile commands:"
@@ -135,6 +170,7 @@ help:
 	@echo "  make fmt          - Format code"
 	@echo "  make check        - Run all checks"
 	@echo "  make version      - Show version information"
+	@echo "  make bump-version - Bump patch version (or V=X.Y.Z)"
 	@echo "  make help         - Show this help"
 
 
