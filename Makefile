@@ -7,7 +7,7 @@ GO=go
 GOFLAGS=-v
 COVERAGE_FILE=coverage.out
 # Version information
-VERSION ?= 1.0.0
+VERSION ?= 1.0.1
 VERSION_GO_FILE := pkg/version/version.go
 VERSION_BUILD_SCRIPT := scripts/build-static.sh
 SKIP_GO_VERSION_UPDATE := true

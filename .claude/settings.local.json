@@ -46,7 +46,9 @@
       "Bash(./bin/checkfix_agent-linux-amd64:*)",
       "Bash(./checkfix_agent:*)",
       "Bash(ls:*)",
-      "Bash(make:*)"
+      "Bash(make:*)",
+      "Bash(find:*)",
+      "Bash(git log:*)"
     ],
     "deny": [],
     "ask": []
