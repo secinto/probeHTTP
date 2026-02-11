@@ -81,11 +81,11 @@ clean:
 	rm -rf dist/
 	@echo "✅ Cleaned"
 
-# Install the binary
+# Install the binary to /usr/local/bin (requires sudo)
 install: build
-	@echo "Installing $(BINARY_NAME)..."
-	mv $(BINARY_NAME) $(GOPATH)/bin/
-	@echo "✅ Installed to $(GOPATH)/bin/$(BINARY_NAME)"
+	@echo "Installing $(BINARY_NAME) to /usr/local/bin/..."
+	sudo cp $(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
+	@echo "Installed to /usr/local/bin/$(BINARY_NAME)"
 
 # Download dependencies
 deps:
@@ -164,7 +164,7 @@ help:
 	@echo "  make lint         - Run linter"
 	@echo "  make security     - Run security checks"
 	@echo "  make clean        - Clean build artifacts"
-	@echo "  make install      - Install the binary"
+	@echo "  make install      - Install the binary to /usr/local/bin"
 	@echo "  make deps         - Download dependencies"
 	@echo "  make deps-update  - Update dependencies"
 	@echo "  make fmt          - Format code"
