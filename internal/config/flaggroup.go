@@ -137,7 +137,7 @@ func RegisterFlags(cfg *Config) *HelpFormatter {
 
 	// RATE-LIMIT
 	rateLimit := &FlagGroup{Name: "RATE-LIMIT"}
-	addIntFlag(rateLimit, &cfg.Timeout, "t", "timeout", 30, "Request timeout in seconds")
+	addIntFlag(rateLimit, &cfg.Timeout, "t", "timeout", 10, "Request timeout in seconds")
 	addIntFlag(rateLimit, &cfg.Concurrency, "c", "concurrency", 20, "Concurrent requests")
 	addIntFlag(rateLimit, &cfg.TLSHandshakeTimeout, "tls-timeout", "tls-handshake-timeout", 10, "TLS handshake timeout in seconds")
 	addIntFlag(rateLimit, &cfg.RateLimitTimeout, "", "rate-limit-timeout", 60, "Rate limit wait timeout in seconds")
