@@ -1,0 +1,9 @@
+test_name	records	records_status_gt0	records_status_0	records_with_error	unique_inputs	status_2xx	status_3xx	status_4xx	status_5xx
+01_default.json	45	45	0	0	45	24	0	20	1
+02_insecure.json	83	83	0	0	83	41	0	38	4
+03_all_schemes.json	69	69	0	0	57	24	0	44	1
+04_ignore_ports.json	46	46	0	0	44	25	0	20	1
+05_custom_ports_443_8443.json	46	46	0	0	44	25	0	20	1
+06_no_redirects.json	45	45	0	0	45	14	11	19	1
+07_disable_http3.json	74	45	29	29	74	24	0	20	1
+08_retries_2.json	45	45	0	0	45	24	0	20	1

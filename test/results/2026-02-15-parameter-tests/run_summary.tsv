@@ -1,0 +1,9 @@
+test_name	exit_code	duration_sec	json_lines	stdout_lines	stderr_lines	flags
+01_default	0	8	45	24	3	
+02_insecure	0	1	83	41	3	-k
+03_all_schemes	0	9	69	24	62	-as
+04_ignore_ports	0	142	46	25	4	-ip
+05_custom_ports_443_8443	0	57	46	25	4	-p 443,8443
+06_no_redirects	0	7	45	14	3	-fr=false
+07_disable_http3	0	2	74	24	3	--disable-http3
+08_retries_2	0	21	45	24	3	--retries 2
