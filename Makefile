@@ -81,11 +81,40 @@ clean:
 	rm -rf dist/
 	@echo "✅ Cleaned"
 
-# Install the binary to /usr/local/bin (requires sudo)
+# Install the binary to GOPATH/bin
 install: build
-	@echo "Installing $(BINARY_NAME) to /usr/local/bin/..."
-	sudo cp $(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
-	@echo "Installed to /usr/local/bin/$(BINARY_NAME)"
+	@# Check and set GOPATH if not set
+	@if [ -z "$$GOPATH" ]; then \
+		DEFAULT_GOPATH="$$HOME/go"; \
+		echo "GOPATH is not set."; \
+		echo -n "Enter GOPATH [$$DEFAULT_GOPATH]: "; \
+		read USER_GOPATH; \
+		if [ -z "$$USER_GOPATH" ]; then \
+			GOPATH="$$DEFAULT_GOPATH"; \
+		else \
+			GOPATH="$$USER_GOPATH"; \
+		fi; \
+		echo "Using GOPATH=$$GOPATH"; \
+		echo "Note: Add 'export GOPATH=$$GOPATH' to your ~/.bashrc or ~/.zshrc"; \
+	else \
+		echo "Using GOPATH=$$GOPATH"; \
+	fi; \
+	GOBIN="$$GOPATH/bin"; \
+	echo "Installing $(BINARY_NAME) to $$GOBIN/..."; \
+	mkdir -p "$$GOBIN"; \
+	if [ -f "/usr/local/bin/$(BINARY_NAME)" ]; then \
+		echo "Removing old installation from /usr/local/bin/..."; \
+		sudo rm -f "/usr/local/bin/$(BINARY_NAME)"; \
+	fi; \
+	cp $(BINARY_NAME) "$$GOBIN/$(BINARY_NAME)"; \
+	echo "✅ Installed to $$GOBIN/$(BINARY_NAME)"; \
+	if echo "$$PATH" | grep -q "$$GOBIN"; then \
+		echo "✅ $$GOBIN is already in PATH"; \
+	else \
+		echo "⚠ Warning: $$GOBIN is not in your PATH"; \
+		echo "Add the following to your ~/.bashrc or ~/.zshrc:"; \
+		echo "  export PATH=\"$$GOBIN:\$$PATH\""; \
+	fi
 
 # Download dependencies
 deps:
