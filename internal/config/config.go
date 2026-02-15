@@ -40,6 +40,10 @@ type Config struct {
 	TechDetect     bool     // Enable technology detection
 	DetectCDN      bool     // Enable CDN detection
 	DetectCNAME    bool     // Enable CNAME resolution
+	// TLS extraction options
+	ExtractTLS      bool   // Extract certificate details from TLS connections
+	ExtractTLSChain bool   // Include intermediate certificate chain
+	DiscoverDomains bool   // Discover domains from certificate SANs/CN and CSP headers
 	// Storage options
 	StoreResponse         bool   // Store HTTP responses to disk
 	StoreResponseDir      string // Directory for stored responses
@@ -98,6 +102,11 @@ func ParseFlags() (*Config, error) {
 	// Validate mutually exclusive flags
 	if cfg.UserAgent != "" && cfg.RandomUserAgent {
 		return nil, fmt.Errorf("-ua/--user-agent and -rua/--random-user-agent are mutually exclusive")
+	}
+
+	// --extract-tls-chain implies --extract-tls
+	if cfg.ExtractTLSChain {
+		cfg.ExtractTLS = true
 	}
 
 	// Set up structured logger

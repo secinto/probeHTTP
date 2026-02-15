@@ -118,6 +118,9 @@ func RegisterFlags(cfg *Config) *HelpFormatter {
 	addBoolFlag(probes, &cfg.TechDetect, "td", "tech-detect", false, "Enable technology detection using wappalyzer")
 	addBoolFlag(probes, &cfg.DetectCDN, "cdn", "detect-cdn", false, "Detect CDN from response headers")
 	addBoolFlag(probes, &cfg.DetectCNAME, "cname", "detect-cname", false, "Resolve and report CNAME records")
+	addBoolFlag(probes, &cfg.ExtractTLS, "xtls", "extract-tls", false, "Extract TLS certificate details (subject, SANs, issuer, validity)")
+	addBoolFlag(probes, &cfg.ExtractTLSChain, "", "extract-tls-chain", false, "Include intermediate certificate chain (implies --extract-tls)")
+	addBoolFlag(probes, &cfg.DiscoverDomains, "dd", "discover-domains", false, "Discover domains from certificate SANs/CN and CSP headers")
 	formatter.Groups = append(formatter.Groups, probes)
 
 	// CONFIGURATION

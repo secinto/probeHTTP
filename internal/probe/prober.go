@@ -443,6 +443,11 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		result.CDNName = cdnName
 	}
 
+	// Domain discovery from CSP headers (HTTP path — no TLS certificates)
+	if p.config.DiscoverDomains {
+		result.DiscoveredDomains = DiscoverDomains(nil, finalResp.Header, parsedURL.Hostname())
+	}
+
 	// Handle response storage and JSON output options
 	if p.config.IncludeResponseHeader {
 		result.ResponseHeaders = normalizeHeaders(finalResp.Header)
@@ -876,6 +881,14 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 			Version: result.TLSVersion,
 			Cipher:  result.CipherSuite,
 		}
+
+		// Extract certificate details (opt-in via --extract-tls)
+		if p.config.ExtractTLS {
+			result.TLS.Certificate = ExtractCertificateInfo(resp.TLS)
+			if p.config.ExtractTLSChain {
+				result.TLS.Chain = ExtractCertificateChain(resp.TLS)
+			}
+		}
 	}
 
 	// Read response body
@@ -1035,6 +1048,11 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		isCDN, cdnName := cdn.DetectCDN(finalResp.Header)
 		result.CDN = isCDN
 		result.CDNName = cdnName
+	}
+
+	// Domain discovery from certificate SANs/CN and CSP headers
+	if p.config.DiscoverDomains {
+		result.DiscoveredDomains = DiscoverDomains(resp.TLS, finalResp.Header, parsedURL.Hostname())
 	}
 
 	// Handle response storage and JSON output options

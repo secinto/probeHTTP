@@ -4,10 +4,37 @@ import (
 	"probeHTTP/internal/hash"
 )
 
-// TLSInfo provides httpx-compatible nested TLS information
+// CertificateInfo holds parsed X.509 certificate details.
+type CertificateInfo struct {
+	SubjectCN    string   `json:"subject_cn,omitempty"`
+	SubjectOrg   string   `json:"subject_org,omitempty"`
+	IssuerCN     string   `json:"issuer_cn,omitempty"`
+	IssuerOrg    string   `json:"issuer_org,omitempty"`
+	SANs         []string `json:"sans,omitempty"`
+	NotBefore    string   `json:"not_before,omitempty"`
+	NotAfter     string   `json:"not_after,omitempty"`
+	SerialNumber string   `json:"serial_number,omitempty"`
+	Fingerprint  string   `json:"fingerprint_sha256,omitempty"`
+	IsExpired    bool     `json:"is_expired,omitempty"`
+	IsSelfSigned bool     `json:"is_self_signed,omitempty"`
+	KeyAlgorithm string   `json:"key_algorithm,omitempty"`
+	KeySize      int      `json:"key_size,omitempty"`
+	SigAlgorithm string   `json:"sig_algorithm,omitempty"`
+}
+
+// TLSInfo provides nested TLS connection and certificate information.
 type TLSInfo struct {
-	Version string `json:"version,omitempty"`
-	Cipher  string `json:"cipher,omitempty"`
+	Version     string            `json:"version,omitempty"`
+	Cipher      string            `json:"cipher,omitempty"`
+	Certificate *CertificateInfo  `json:"certificate,omitempty"`
+	Chain       []CertificateInfo `json:"chain,omitempty"`
+}
+
+// DiscoveredDomains holds domains found via TLS certificates and CSP headers.
+type DiscoveredDomains struct {
+	Domains       []string          `json:"domains,omitempty"`
+	DomainSources map[string]string `json:"domain_sources,omitempty"`
+	NewDomains    []string          `json:"new_domains,omitempty"`
 }
 
 // ProbeResult represents the JSON output for each probed URL
@@ -48,6 +75,8 @@ type ProbeResult struct {
 	Error            string   `json:"error,omitempty"`
 	SNIRequired      bool     `json:"sni_required,omitempty"`
 	Diagnostic       string   `json:"diagnostic,omitempty"`
+	// TLS extraction fields (optional, enabled via --extract-tls)
+	DiscoveredDomains *DiscoveredDomains `json:"discovered_domains,omitempty"`
 	// Storage-related fields (optional, based on flags)
 	ResponseHeaders    map[string]string `json:"response_headers,omitempty"`
 	RequestHeaders     map[string]string `json:"request_headers,omitempty"`
