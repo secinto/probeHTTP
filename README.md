@@ -665,6 +665,7 @@ The project includes comprehensive tests:
 - **Fuzz tests**: Find edge cases with random inputs
 - **Benchmark tests**: Measure performance
 - **TLS tests**: Verify parallel TLS strategy logic
+- **Parameter regression suite**: Replays a fixed flag matrix against AGES targets
 
 ```bash
 # Run all tests
@@ -678,7 +679,14 @@ make fuzz
 
 # Generate coverage report
 make coverage
+
+# Run AGES parameter regression suite
+make parameter-suite
+# (or)
+./scripts/run-ages-parameter-suite.sh --assert
 ```
+
+See `docs/PARAMETER_SUITE.md` for matrix details, outputs, and assertion behavior.
 
 ### Contributing
 

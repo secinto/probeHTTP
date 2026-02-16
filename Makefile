@@ -1,4 +1,4 @@
-.PHONY: build build-static build-static-all build-all test bench fuzz lint clean install coverage bump-version help
+.PHONY: build build-static build-static-all build-all test bench fuzz lint clean install coverage bump-version help parameter-suite
 
 # Variables
 BINARY_NAME=probeHTTP
@@ -141,6 +141,11 @@ fmt:
 check: lint test security
 	@echo "✅ All checks passed"
 
+# Run AGEs parameter regression suite against probeHTTP binary
+parameter-suite: build
+	@echo "Running AGES parameter suite..."
+	./scripts/run-ages-parameter-suite.sh --assert
+
 # Show version
 version:
 	@echo "Version: $(VERSION)"
@@ -198,6 +203,7 @@ help:
 	@echo "  make deps-update  - Update dependencies"
 	@echo "  make fmt          - Format code"
 	@echo "  make check        - Run all checks"
+	@echo "  make parameter-suite - Run AGES parameter regression suite"
 	@echo "  make version      - Show version information"
 	@echo "  make bump-version - Bump patch version (or V=X.Y.Z)"
 	@echo "  make help         - Show this help"
