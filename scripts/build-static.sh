@@ -105,7 +105,7 @@ fi
 echo ""
 
 # Build information
-BASE_VERSION="1.0.1"
+BASE_VERSION="1.0.2"
 COMMIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
 
