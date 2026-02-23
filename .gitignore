@@ -62,6 +62,8 @@ bin/
 test_output/
 testdata/output/
 *.json.out
+test/results/
+results.json
 
 # Backup files
 *.bak

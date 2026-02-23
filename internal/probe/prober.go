@@ -32,6 +32,7 @@ type Prober struct {
 	ipTracker    *IPTracker
 	techDetector *tech.Detector
 	cnameCache   sync.Map // hostname -> CNAME string
+	cnameMutex   sync.Mutex // protects concurrent CNAME lookups
 	// Mutex for atomic stderr writes when flushing debug buffers
 	stderrMutex  sync.Mutex
 	cleanupFuncs []func() error
@@ -206,11 +207,22 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 				result.CNAME = strings.TrimSuffix(cname, ".")
 			}
 		} else {
-			cname, lookupErr := net.LookupCNAME(hostname)
-			if lookupErr == nil && cname != "" && cname != hostname+"." {
-				result.CNAME = strings.TrimSuffix(cname, ".")
+			// Serialize CNAME lookups to avoid CGO double-free
+			p.cnameMutex.Lock()
+			// Double-check after acquiring lock
+			if cachedCNAME, ok := p.cnameCache.Load(hostname); ok {
+				p.cnameMutex.Unlock()
+				if cname := cachedCNAME.(string); cname != "" && cname != hostname+"." {
+					result.CNAME = strings.TrimSuffix(cname, ".")
+				}
+			} else {
+				cname, lookupErr := net.LookupCNAME(hostname)
+				if lookupErr == nil && cname != "" && cname != hostname+"." {
+					result.CNAME = strings.TrimSuffix(cname, ".")
+				}
+				p.cnameCache.Store(hostname, cname)
+				p.cnameMutex.Unlock()
 			}
-			p.cnameCache.Store(hostname, cname)
 		}
 	}
 
@@ -441,6 +453,11 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		isCDN, cdnName := cdn.DetectCDN(finalResp.Header)
 		result.CDN = isCDN
 		result.CDNName = cdnName
+	}
+
+	// Domain discovery from CSP headers (HTTP path — no TLS certificates)
+	if p.config.DiscoverDomains {
+		result.DiscoveredDomains = DiscoverDomains(nil, finalResp.Header, parsedURL.Hostname())
 	}
 
 	// Handle response storage and JSON output options
@@ -797,11 +814,22 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 				result.CNAME = strings.TrimSuffix(cname, ".")
 			}
 		} else {
-			cname, lookupErr := net.LookupCNAME(cnameHost)
-			if lookupErr == nil && cname != "" && cname != cnameHost+"." {
-				result.CNAME = strings.TrimSuffix(cname, ".")
+			// Serialize CNAME lookups to avoid CGO double-free
+			p.cnameMutex.Lock()
+			// Double-check after acquiring lock
+			if cachedCNAME, ok := p.cnameCache.Load(cnameHost); ok {
+				p.cnameMutex.Unlock()
+				if cname := cachedCNAME.(string); cname != "" && cname != cnameHost+"." {
+					result.CNAME = strings.TrimSuffix(cname, ".")
+				}
+			} else {
+				cname, lookupErr := net.LookupCNAME(cnameHost)
+				if lookupErr == nil && cname != "" && cname != cnameHost+"." {
+					result.CNAME = strings.TrimSuffix(cname, ".")
+				}
+				p.cnameCache.Store(cnameHost, cname)
+				p.cnameMutex.Unlock()
 			}
-			p.cnameCache.Store(cnameHost, cname)
 		}
 	}
 
@@ -875,6 +903,14 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		result.TLS = &output.TLSInfo{
 			Version: result.TLSVersion,
 			Cipher:  result.CipherSuite,
+		}
+
+		// Extract certificate details (opt-in via --extract-tls)
+		if p.config.ExtractTLS {
+			result.TLS.Certificate = ExtractCertificateInfo(resp.TLS)
+			if p.config.ExtractTLSChain {
+				result.TLS.Chain = ExtractCertificateChain(resp.TLS)
+			}
 		}
 	}
 
@@ -1035,6 +1071,11 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		isCDN, cdnName := cdn.DetectCDN(finalResp.Header)
 		result.CDN = isCDN
 		result.CDNName = cdnName
+	}
+
+	// Domain discovery from certificate SANs/CN and CSP headers
+	if p.config.DiscoverDomains {
+		result.DiscoveredDomains = DiscoverDomains(resp.TLS, finalResp.Header, parsedURL.Hostname())
 	}
 
 	// Handle response storage and JSON output options

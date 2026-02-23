@@ -48,7 +48,10 @@
       "Bash(ls:*)",
       "Bash(make:*)",
       "Bash(find:*)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(/tmp/probehttp:*)",
+      "Bash(bd sync:*)",
+      "Bash(wc:*)"
     ],
     "deny": [],
     "ask": []

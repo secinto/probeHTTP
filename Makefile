@@ -1,4 +1,4 @@
-.PHONY: build build-static build-static-all build-all test bench fuzz lint clean install coverage bump-version help
+.PHONY: build build-static build-static-all build-all test bench fuzz lint clean install coverage bump-version help parameter-suite
 
 # Variables
 BINARY_NAME=probeHTTP
@@ -7,7 +7,7 @@ GO=go
 GOFLAGS=-v
 COVERAGE_FILE=coverage.out
 # Version information
-VERSION ?= 1.0.1
+VERSION ?= 1.0.2
 VERSION_GO_FILE := pkg/version/version.go
 VERSION_BUILD_SCRIPT := scripts/build-static.sh
 SKIP_GO_VERSION_UPDATE := true
@@ -81,11 +81,40 @@ clean:
 	rm -rf dist/
 	@echo "✅ Cleaned"
 
-# Install the binary to /usr/local/bin (requires sudo)
+# Install the binary to GOPATH/bin
 install: build
-	@echo "Installing $(BINARY_NAME) to /usr/local/bin/..."
-	sudo cp $(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
-	@echo "Installed to /usr/local/bin/$(BINARY_NAME)"
+	@# Check and set GOPATH if not set
+	@if [ -z "$$GOPATH" ]; then \
+		DEFAULT_GOPATH="$$HOME/go"; \
+		echo "GOPATH is not set."; \
+		echo -n "Enter GOPATH [$$DEFAULT_GOPATH]: "; \
+		read USER_GOPATH; \
+		if [ -z "$$USER_GOPATH" ]; then \
+			GOPATH="$$DEFAULT_GOPATH"; \
+		else \
+			GOPATH="$$USER_GOPATH"; \
+		fi; \
+		echo "Using GOPATH=$$GOPATH"; \
+		echo "Note: Add 'export GOPATH=$$GOPATH' to your ~/.bashrc or ~/.zshrc"; \
+	else \
+		echo "Using GOPATH=$$GOPATH"; \
+	fi; \
+	GOBIN="$$GOPATH/bin"; \
+	echo "Installing $(BINARY_NAME) to $$GOBIN/..."; \
+	mkdir -p "$$GOBIN"; \
+	if [ -f "/usr/local/bin/$(BINARY_NAME)" ]; then \
+		echo "Removing old installation from /usr/local/bin/..."; \
+		sudo rm -f "/usr/local/bin/$(BINARY_NAME)"; \
+	fi; \
+	cp $(BINARY_NAME) "$$GOBIN/$(BINARY_NAME)"; \
+	echo "✅ Installed to $$GOBIN/$(BINARY_NAME)"; \
+	if echo "$$PATH" | grep -q "$$GOBIN"; then \
+		echo "✅ $$GOBIN is already in PATH"; \
+	else \
+		echo "⚠ Warning: $$GOBIN is not in your PATH"; \
+		echo "Add the following to your ~/.bashrc or ~/.zshrc:"; \
+		echo "  export PATH=\"$$GOBIN:\$$PATH\""; \
+	fi
 
 # Download dependencies
 deps:
@@ -111,6 +140,11 @@ fmt:
 # Run all checks (lint, test, security)
 check: lint test security
 	@echo "✅ All checks passed"
+
+# Run AGEs parameter regression suite against probeHTTP binary
+parameter-suite: build
+	@echo "Running AGES parameter suite..."
+	./scripts/run-ages-parameter-suite.sh --assert
 
 # Show version
 version:
@@ -169,6 +203,7 @@ help:
 	@echo "  make deps-update  - Update dependencies"
 	@echo "  make fmt          - Format code"
 	@echo "  make check        - Run all checks"
+	@echo "  make parameter-suite - Run AGES parameter regression suite"
 	@echo "  make version      - Show version information"
 	@echo "  make bump-version - Bump patch version (or V=X.Y.Z)"
 	@echo "  make help         - Show this help"
