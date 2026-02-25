@@ -553,7 +553,6 @@ func (p *Prober) processResponse(ctx context.Context, resp *http.Response, state
 	if p.ipTracker != nil {
 		ip := p.ipTracker.GetIP(result.Host)
 		if ip != "" {
-			result.IP = ip
 			result.HostIP = ip
 		}
 	}

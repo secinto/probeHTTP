@@ -51,7 +51,6 @@ type ProbeResult struct {
 	ContentType      string   `json:"content_type"`
 	Method           string   `json:"method"`
 	Host             string   `json:"host"`
-	IP               string   `json:"a,omitempty"`
 	HostIP           string   `json:"host_ip,omitempty"`
 	Path             string   `json:"path"`
 	Time             string   `json:"time"`
