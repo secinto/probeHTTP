@@ -82,8 +82,16 @@ func TestValidateURL(t *testing.T) {
 		{"127.0.0.1 blocked", "127.0.0.1", false, true, "localhost not allowed"},
 		{"private IP blocked", "192.168.1.1", false, true, "private IP"},
 		{"10.x.x.x blocked", "10.0.0.1", false, true, "private IP"},
+		{"link-local unicast blocked", "169.254.1.1", false, true, "link-local"},
+		{"ipv6 link-local blocked", "fe80::1", false, true, "link-local"},
+		{"multicast blocked", "239.1.1.1", false, true, "multicast"},
+		{"unspecified ipv4 blocked", "0.0.0.0", false, true, "unspecified"},
+		{"unspecified ipv6 blocked", "::", false, true, "unspecified"},
 		{"localhost allowed", "localhost", true, false, ""},
 		{"private IP allowed", "192.168.1.1", true, false, ""},
+		{"link-local allowed", "169.254.1.1", true, false, ""},
+		{"multicast allowed", "239.1.1.1", true, false, ""},
+		{"unspecified allowed", "0.0.0.0", true, false, ""},
 	}
 
 	for _, tt := range tests {

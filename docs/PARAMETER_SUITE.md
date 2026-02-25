@@ -50,20 +50,21 @@ Each run creates a timestamped directory under `test/results/parameter-suite/` w
 6. `06_no_redirects` (`-fr=false`)
 7. `07_disable_http3` (`--disable-http3`)
 8. `08_retries_2` (`--retries 2`)
+9. `20_rate_limit` (`--rate-limit 5 --rate-burst 2`)
 
 ### Combination coverage
 
-9. `09_all_schemes_ignore_ports` (`-as -ip`)
-10. `10_all_schemes_ports_443_8443` (`-as -p 443,8443`)
-11. `11_ignore_ports_plus_ports_443_8443` (`-ip -p 443,8443`)
-12. `12_all_schemes_ignore_ports_insecure` (`-as -ip -k`)
-13. `13_insecure_disable_http3` (`-k --disable-http3`)
-14. `14_follow_redirects_max1` (`-fr=true -maxr 1`)
-15. `15_same_host_only` (`-sho`)
-16. `16_retries3_timeout3` (`--retries 3 -t 3`)
-17. `17_include_response_header` (`-irh`)
-18. `18_include_response_full` (`-irr`)
-19. `19_store_response` (`-sr -srd <dir>`)
+10. `09_all_schemes_ignore_ports` (`-as -ip`)
+11. `10_all_schemes_ports_443_8443` (`-as -p 443,8443`)
+12. `11_ignore_ports_plus_ports_443_8443` (`-ip -p 443,8443`)
+13. `12_all_schemes_ignore_ports_insecure` (`-as -ip -k`)
+14. `13_insecure_disable_http3` (`-k --disable-http3`)
+15. `14_follow_redirects_max1` (`-fr=true -maxr 1`)
+16. `15_same_host_only` (`-sho`)
+17. `16_retries3_timeout3` (`--retries 3 -t 3`)
+18. `17_include_response_header` (`-irh`)
+19. `18_include_response_full` (`-irr`)
+20. `19_store_response` (`-sr -srd <dir>`)
 
 ## Assertions (`--assert`)
 

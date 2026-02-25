@@ -4,13 +4,13 @@ A comprehensive, high-performance HTTP/HTTPS probing tool written in Go that per
 
 > **✨ Version 2.0 - Major Refactoring & Performance Enhancement**
 > 
-> This version includes significant performance improvements, security hardening, parallel TLS/protocol attempts, and architectural enhancements. See [docs/IMPLEMENTATION_SUMMARY.md](docs/IMPLEMENTATION_SUMMARY.md) for complete details.
+> This version includes significant performance improvements, security hardening, TLS/protocol fallback, and architectural enhancements. See [docs/IMPLEMENTATION_SUMMARY.md](docs/IMPLEMENTATION_SUMMARY.md) for complete details.
 
 ## Features
 
 ### Core Capabilities
 - **Multi-scheme and multi-port probing** - Test HTTP and HTTPS across multiple ports simultaneously
-- **Parallel TLS/Protocol attempts** - Automatically tries TLS 1.3/1.2/1.1/1.0 with HTTP/3, HTTP/2, and HTTP/1.1
+- **TLS/Protocol fallback** - Automatically tries TLS 1.3/1.2/1.1/1.0 with HTTP/3, HTTP/2, and HTTP/1.1
 - **HTTP/3 (QUIC) support** - First-class support for modern QUIC protocol with automatic fallback
 - **MMH3 hash calculation** for response body and headers (content fingerprinting)
 - **HTML title extraction** with intelligent fallback support (og:title, twitter:title, etc.)
@@ -31,8 +31,8 @@ A comprehensive, high-performance HTTP/HTTPS probing tool written in Go that per
 - 🛑 **Graceful shutdown** on Ctrl+C with context cancellation
 - 💾 **Response body size limits** (10MB default, prevents DoS)
 - 🎯 **Context-based cancellation** throughout the codebase
-- 🌐 **HTTP/3 (QUIC) support** - Parallel protocol attempts with automatic fallback
-- 🔐 **Parallel TLS attempts** - Tries multiple TLS versions and cipher suites simultaneously
+- 🌐 **HTTP/3 (QUIC) support** - Protocol attempts with automatic fallback
+- 🔐 **TLS fallback** - Tries multiple TLS versions and cipher suites in order until one succeeds
 - 📊 **TLS metadata reporting** - Reports TLS version, cipher suite, and protocol used
 - 🔍 **URL deduplication** - Automatically removes duplicate endpoints
 - 📦 **Comprehensive test suite** - 11 test files with integration, fuzzing, and benchmarks
@@ -78,7 +78,7 @@ VERSION=1.2.3 make build
 
 # Check version
 ./probeHTTP --version
-# Output: probeHTTP 1.2.3 (commit: abc1234, built: 2024-01-01T12:00:00Z, go: go1.24.0)
+# Output: probeHTTP 1.2.3 (commit: abc1234, built: 2024-01-01T12:00:00Z, go: go1.26.0)
 
 # View build-time version info
 make version
@@ -94,7 +94,7 @@ The binary automatically includes:
 
 ### Dependencies
 
-- Go 1.24+
+- Go 1.26+
 - `github.com/twmb/murmur3` - MMH3 hashing
 - `golang.org/x/net/html` - HTML parsing
 - `github.com/quic-go/quic-go` - HTTP/3 (QUIC) support
@@ -139,6 +139,8 @@ echo -e "https://example.com\nhttps://github.com" | ./probeHTTP
 | `--insecure` | `-k` | Skip TLS certificate verification | false |
 | `--allow-private` | | Allow scanning private IP addresses | false |
 | `--retries` | | Maximum number of retries for failed requests | 0 |
+| `--rate-limit` | | Requests per second per host | 10 |
+| `--rate-burst` | | Burst size for rate limiter | 1 |
 | `--tls-timeout` | | Timeout for TLS handshake attempts in seconds | 10 |
 | `--tls-handshake-timeout` | | Alias for --tls-timeout | 10 |
 | `--disable-http3` | | Disable HTTP/3 (QUIC) support | false |
@@ -152,6 +154,9 @@ echo -e "https://example.com\nhttps://github.com" | ./probeHTTP
 ```bash
 # Probe with custom timeout and concurrency
 echo "https://example.com" | ./probeHTTP -t 10 -c 5
+
+# Custom rate limit (5 req/s per host, burst of 3)
+echo "https://example.com" | ./probeHTTP --rate-limit 5 --rate-burst 3
 
 # Don't follow redirects
 echo "https://google.com" | ./probeHTTP -fr=false
@@ -218,6 +223,12 @@ echo "https://example.com" | ./probeHTTP --all-schemes --ignore-ports
 
 # Allow scanning private IPs (security testing)
 ./probeHTTP -i urls.txt --allow-private
+
+# Custom rate limit for aggressive scanning (20 req/s, burst 5)
+./probeHTTP -i urls.txt --rate-limit 20 --rate-burst 5
+
+# Gentler rate limit for fragile servers (2 req/s)
+./probeHTTP -i urls.txt --rate-limit 2
 ```
 
 ## Output Format
@@ -389,22 +400,22 @@ probeHTTP automatically deduplicates URLs that resolve to the same endpoint:
 
 This prevents unnecessary duplicate requests and improves performance.
 
-## Parallel TLS and Protocol Attempts
+## TLS and Protocol Fallback
 
-probeHTTP automatically tries multiple TLS configurations and HTTP protocols **in parallel** for HTTPS URLs to maximize compatibility, speed, and success rate.
+probeHTTP automatically tries multiple TLS configurations and HTTP protocols **with automatic fallback** for HTTPS URLs to maximize compatibility and success rate.
 
 ### How It Works
 
-For HTTPS URLs, probeHTTP uses a sophisticated batched approach:
+For HTTPS URLs, probeHTTP tries strategies in order until one succeeds:
 
-**Batch 1 (Modern - 3 parallel attempts):**
-1. **TLS 1.3** with **HTTP/3** (QUIC) - Fastest modern protocol
+**Batch 1 (Modern — tried first):**
+1. **TLS 1.2 Compatible** with **HTTP/1.1** - Broadest compatibility
 2. **TLS 1.2 Secure** with **HTTP/2** - Strong cipher suites only
-3. **TLS 1.2 Compatible** with **HTTP/1.1** - Broader cipher suite support
+3. **TLS 1.3** with **HTTP/3** (QUIC) or HTTP/2 - Fastest modern protocol
 
 If all Batch 1 attempts fail, fallback to:
 
-**Batch 2 (Legacy - 2 parallel attempts):**
+**Batch 2 (Legacy):**
 4. **TLS 1.1** with HTTP/1.1 - Deprecated but still used
 5. **TLS 1.0** with HTTP/1.1 - Legacy support
 
@@ -420,7 +431,7 @@ If all Batch 1 attempts fail, fallback to:
 
 ### Advantages
 
-- ⚡ **Speed**: First successful response wins and cancels remaining attempts
+- ⚡ **Speed**: First successful response stops further attempts
 - 🎯 **Compatibility**: Automatically finds the best TLS/protocol combination
 - 🔒 **Security**: Prefers modern protocols but falls back when needed
 - 📊 **Visibility**: Reports which TLS version and protocol was actually used
@@ -551,13 +562,19 @@ Retries are only triggered for network errors, not HTTP errors (4xx/5xx status c
 ## Rate Limiting
 
 probeHTTP implements per-host rate limiting to prevent overwhelming target servers:
-- Default: 10 requests per second per hostname
+- Default: 10 requests per second per hostname (`--rate-limit 10`, `--rate-burst 1`)
 - Implemented using token bucket algorithm
 - Helps avoid triggering rate limit protections on target servers
 
 ```bash
-# Example: Scanning 100 URLs from same host will take ~10 seconds minimum
+# Default: 100 URLs from same host takes ~10 seconds minimum
 echo "example.com" | ./probeHTTP --ports "8000-8100"
+
+# Custom rate: 5 req/s per host
+echo "example.com" | ./probeHTTP --ports "8000-8100" --rate-limit 5
+
+# Higher throughput with burst (20 req/s, burst of 5)
+./probeHTTP -i urls.txt --rate-limit 20 --rate-burst 5
 ```
 
 ## Use Cases
@@ -577,7 +594,7 @@ echo "example.com" | ./probeHTTP --ports "8000-8100"
 ### Optimizations
 
 - **Connection pooling**: Reuses TCP connections (40% improvement)
-- **Parallel TLS attempts**: Reduces latency for HTTPS requests
+- **TLS fallback**: Reduces latency for HTTPS requests
 - **Pre-compiled regexes**: 90% faster title extraction
 - **Efficient hashing**: Uses fast MMH3 algorithm
 - **Context cancellation**: Immediate shutdown on Ctrl+C
@@ -664,7 +681,7 @@ The project includes comprehensive tests:
 - **Integration tests**: Test end-to-end workflows
 - **Fuzz tests**: Find edge cases with random inputs
 - **Benchmark tests**: Measure performance
-- **TLS tests**: Verify parallel TLS strategy logic
+- **TLS tests**: Verify TLS fallback strategy logic
 - **Parameter regression suite**: Replays a fixed flag matrix against AGES targets
 
 ```bash
@@ -728,7 +745,7 @@ make security
 
 ## Acknowledgments
 
-- Built with Go 1.24
+- Built with Go 1.26
 - Uses QUIC Go library for HTTP/3 support
 - MMH3 hashing by twmb/murmur3
 - HTML parsing by golang.org/x/net

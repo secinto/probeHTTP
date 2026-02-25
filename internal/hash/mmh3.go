@@ -1,10 +1,10 @@
 package hash
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 
 	"github.com/twmb/murmur3"
 )
@@ -38,17 +38,17 @@ func CalculateHeaderMMH3(headers http.Header) string {
 		}
 	}
 
-	// Concatenate headers with pre-allocated builder
-	var headerStr strings.Builder
-	headerStr.Grow(estimatedSize)
+	// Concatenate headers with pre-allocated buffer (avoids string allocation)
+	var buf bytes.Buffer
+	buf.Grow(estimatedSize)
 	for _, k := range keys {
 		for _, v := range headers[k] {
-			headerStr.WriteString(k)
-			headerStr.WriteString(": ")
-			headerStr.WriteString(v)
-			headerStr.WriteString("\n")
+			buf.WriteString(k)
+			buf.WriteString(": ")
+			buf.WriteString(v)
+			buf.WriteString("\n")
 		}
 	}
 
-	return CalculateMMH3([]byte(headerStr.String()))
+	return CalculateMMH3(buf.Bytes())
 }

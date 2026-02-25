@@ -55,7 +55,7 @@ func FuzzExtractTitle(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, input string) {
 		// Should not panic
-		_ = parser.ExtractTitle(input)
+		_ = parser.ExtractTitle(input, "")
 	})
 }
 

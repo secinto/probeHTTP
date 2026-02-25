@@ -189,6 +189,91 @@ func TestProbeURL_MaxRedirects(t *testing.T) {
 	}
 }
 
+// TestProbeURL_RedirectBodyReadError tests that body read errors during redirects
+// are logged but do not abort the probe (StoreResponse path).
+func TestProbeURL_RedirectBodyReadError(t *testing.T) {
+	cfg := resetConfig()
+	cfg.FollowRedirects = true
+	cfg.Silent = true
+	cfg.StoreResponse = true
+	cfg.StoreResponseDir = t.TempDir()
+
+	// Final server returns a body that fails mid-read (closes connection)
+	finalServer := createTestServer(bodyErrorHandler)
+	defer finalServer.Close()
+
+	redirectServer := createTestServer(redirectHandler(finalServer.URL))
+	defer redirectServer.Close()
+
+	prober := probe.NewProber(cfg)
+	defer prober.Close()
+	ctx := context.Background()
+	result := prober.ProbeURL(ctx, redirectServer.URL, redirectServer.URL)
+
+	// Should follow redirect (body read error is logged, not fatal)
+	assertStringEqual(t, result.URL, redirectServer.URL, "URL should be original")
+	if result.FinalURL == "" || !strings.HasPrefix(result.FinalURL, finalServer.URL) {
+		t.Errorf("should reach final server after redirect, got FinalURL=%q", result.FinalURL)
+	}
+	// May have partial body error or succeed with partial content
+	if result.Error != "" {
+		if !strings.Contains(result.Error, "body") && !strings.Contains(result.Error, "partial") {
+			t.Logf("probe completed with error: %s", result.Error)
+		}
+	}
+}
+
+// TestProcessURLs_ContextCancellation verifies that cancelling context causes
+// quick shutdown (labeled break in sender, workers exit).
+func TestProcessURLs_ContextCancellation(t *testing.T) {
+	cfg := resetConfig()
+	cfg.Silent = true
+
+	// Server with small delay to allow some requests to start
+	server := createTestServer(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		simpleHTMLHandler(w, r)
+	})
+	defer server.Close()
+
+	// Many URLs so sender has work to do when we cancel
+	urls := make([]string, 100)
+	origMap := make(map[string]string)
+	for i := range urls {
+		urls[i] = server.URL
+		origMap[urls[i]] = server.URL
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	prober := probe.NewProber(cfg)
+	results := prober.ProcessURLs(ctx, urls, origMap, 5)
+
+	// Cancel after a short time
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	// Drain results - should complete quickly after cancel (not block for full 100 URLs)
+	deadline := time.After(3 * time.Second)
+	count := 0
+	for {
+		select {
+		case _, ok := <-results:
+			if !ok {
+				// Channel closed, shutdown complete
+				if count < 100 {
+					t.Logf("context cancelled: got %d results before shutdown", count)
+				}
+				return
+			}
+			count++
+		case <-deadline:
+			t.Fatal("results channel did not close within 3s after context cancel")
+		}
+	}
+}
+
 // TestProbeURL_Timeout tests request timeout
 func TestProbeURL_Timeout(t *testing.T) {
 	cfg := resetConfig()

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -33,6 +34,8 @@ type cachedClient struct {
 	cleanup func()
 }
 
+const maxCnameCacheSize = 10000
+
 // Prober handles HTTP probing operations
 type Prober struct {
 	client        *Client
@@ -40,7 +43,9 @@ type Prober struct {
 	ipTracker     *IPTracker
 	techDetector  *tech.Detector
 	cnameCache    sync.Map            // hostname -> CNAME string
-	cnameFlight   singleflight.Group // per-hostname dedup for CNAME lookups
+	cnameCacheSz  atomic.Int64        // approximate size for eviction
+	cnameCacheMu  sync.Mutex          // serializes eviction to avoid concurrent Range/Delete
+	cnameFlight   singleflight.Group  // per-hostname dedup for CNAME lookups
 	clientCache   map[string]*cachedClient // strategy:protocol -> cached client
 	clientCacheMu sync.Mutex
 	// Mutex for atomic stderr writes when flushing debug buffers
@@ -188,6 +193,21 @@ func (p *Prober) resolveCNAME(hostname string, result *output.ProbeResult) {
 		cname, err := net.LookupCNAME(hostname)
 		if err != nil {
 			cname = "" // cache empty string for failed lookups
+		}
+		// Evict if cache exceeds max size to bound memory.
+		// Eviction is serialized via cnameCacheMu so concurrent resolveCNAME callers
+		// (different hostnames) cannot run Range/Delete simultaneously and delete
+		// entries stored by others.
+		if p.cnameCacheSz.Add(1) > maxCnameCacheSize {
+			p.cnameCacheMu.Lock()
+			if p.cnameCacheSz.Load() > maxCnameCacheSize {
+				p.cnameCache.Range(func(k, _ interface{}) bool {
+					p.cnameCache.Delete(k)
+					return true
+				})
+				p.cnameCacheSz.Store(0)
+			}
+			p.cnameCacheMu.Unlock()
 		}
 		p.cnameCache.Store(hostname, cname)
 		return cname, nil
@@ -526,7 +546,7 @@ func (p *Prober) processResponse(ctx context.Context, resp *http.Response, state
 
 	// Extract title and count words/lines
 	bodyStr := string(initialBody)
-	result.Title = parser.ExtractTitle(bodyStr)
+	result.Title = parser.ExtractTitle(bodyStr, finalResp.Header.Get("Content-Type"))
 	result.Words, result.Lines = parser.CountWordsAndLines(bodyStr)
 
 	// Resolve IP address

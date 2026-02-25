@@ -115,8 +115,15 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 		if p.config.StoreResponse || p.config.Debug {
 			var bodyBuffer bytes.Buffer
 			bodyReader := io.TeeReader(nextResp.Body, &bodyBuffer)
-			nextBody, _ = io.ReadAll(io.LimitReader(bodyReader, p.config.MaxBodySize))
+			var readErr error
+			nextBody, readErr = io.ReadAll(io.LimitReader(bodyReader, p.config.MaxBodySize))
 			nextResp.Body.Close()
+			if readErr != nil {
+				p.config.Logger.Warn("redirect body read failed",
+					"url", nextURL.String(),
+					"error", readErr,
+				)
+			}
 			// Recreate body for further processing
 			nextResp.Body = io.NopCloser(bytes.NewReader(nextBody))
 		}

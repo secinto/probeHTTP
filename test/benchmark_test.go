@@ -57,7 +57,7 @@ func BenchmarkExtractTitle(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		parser.ExtractTitle(html)
+		parser.ExtractTitle(html, "")
 	}
 }
 

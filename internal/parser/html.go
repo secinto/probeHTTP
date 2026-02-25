@@ -37,9 +37,13 @@ func decodeTitleString(s string) string {
 	return s
 }
 
-// ExtractTitle extracts the HTML title from the body with fallbacks
+// ExtractTitle extracts the HTML title from the body with fallbacks.
 // Priority: 1) <title> tag, 2) og:title meta tag, 3) twitter:title meta tag
-func ExtractTitle(body string) string {
+// If contentType is non-empty and does not contain "text/html", returns "" without parsing.
+func ExtractTitle(body string, contentType string) string {
+	if contentType != "" && !strings.Contains(strings.ToLower(contentType), "text/html") {
+		return ""
+	}
 	doc, err := htmlparser.Parse(strings.NewReader(body))
 	if err != nil {
 		return ""

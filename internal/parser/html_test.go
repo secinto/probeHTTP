@@ -24,7 +24,7 @@ func TestExtractTitle_TitleTag(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ExtractTitle(tt.body)
+			got := ExtractTitle(tt.body, "")
 			if got != tt.want {
 				t.Errorf("ExtractTitle() = %q, want %q", got, tt.want)
 			}
@@ -36,7 +36,7 @@ func TestExtractTitle_OGTitle(t *testing.T) {
 	body := `<html><head>
 		<meta property="og:title" content="OG Title Value">
 	</head></html>`
-	got := ExtractTitle(body)
+	got := ExtractTitle(body, "")
 	if got != "OG Title Value" {
 		t.Errorf("ExtractTitle() = %q, want %q", got, "OG Title Value")
 	}
@@ -46,7 +46,7 @@ func TestExtractTitle_TwitterTitle(t *testing.T) {
 	body := `<html><head>
 		<meta name="twitter:title" content="Twitter Title Value">
 	</head></html>`
-	got := ExtractTitle(body)
+	got := ExtractTitle(body, "")
 	if got != "Twitter Title Value" {
 		t.Errorf("ExtractTitle() = %q, want %q", got, "Twitter Title Value")
 	}
@@ -58,7 +58,7 @@ func TestExtractTitle_Priority(t *testing.T) {
 		<meta property="og:title" content="OG Title">
 		<meta name="twitter:title" content="Twitter Title">
 	</head></html>`
-	got := ExtractTitle(body)
+	got := ExtractTitle(body, "")
 	if got != "HTML Title" {
 		t.Errorf("ExtractTitle() = %q, want %q (should prefer <title>)", got, "HTML Title")
 	}
@@ -69,7 +69,7 @@ func TestExtractTitle_OGFallback(t *testing.T) {
 		<meta property="og:title" content="OG Title">
 		<meta name="twitter:title" content="Twitter Title">
 	</head></html>`
-	got := ExtractTitle(body)
+	got := ExtractTitle(body, "")
 	if got != "OG Title" {
 		t.Errorf("ExtractTitle() = %q, want %q (should prefer og:title over twitter)", got, "OG Title")
 	}
@@ -89,11 +89,33 @@ func TestExtractTitle_MalformedHTML(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ExtractTitle(tt.body)
+			got := ExtractTitle(tt.body, "")
 			if got != tt.want {
 				t.Errorf("ExtractTitle() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractTitle_NonHTMLContentType(t *testing.T) {
+	htmlBody := "<html><head><title>Should Not Parse</title></head></html>"
+	tests := []struct {
+		contentType string
+		want       string
+	}{
+		{"application/json", ""},
+		{"image/png", ""},
+		{"text/plain", ""},
+		{"application/xml", ""},
+		{"text/html", "Should Not Parse"},
+		{"text/html; charset=utf-8", "Should Not Parse"},
+		{"", "Should Not Parse"},
+	}
+	for _, tt := range tests {
+		got := ExtractTitle(htmlBody, tt.contentType)
+		if got != tt.want {
+			t.Errorf("ExtractTitle(..., %q) = %q, want %q", tt.contentType, got, tt.want)
+		}
 	}
 }
 

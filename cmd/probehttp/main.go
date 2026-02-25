@@ -90,7 +90,11 @@ func main() {
 	}
 
 	// Read URLs from input
-	urls := readURLs(inputReader)
+	urls, err := readURLs(inputReader)
+	if err != nil {
+		cfg.Logger.Error("failed to read input URLs", "error", err)
+		os.Exit(1)
+	}
 	cfg.Logger.Info("loaded URLs", "count", len(urls))
 
 	// Expand URLs based on scheme and port configuration
@@ -261,15 +265,20 @@ func main() {
 	)
 }
 
-// readURLs reads URLs from the input reader, skipping comments and empty lines
-func readURLs(reader io.Reader) []string {
+// readURLs reads URLs from the input reader, skipping comments and empty lines.
+// It increases scanner token capacity to support long URL lines.
+func readURLs(reader io.Reader) ([]string, error) {
 	var urls []string
 	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line != "" && !strings.HasPrefix(line, "#") {
 			urls = append(urls, line)
 		}
 	}
-	return urls
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return urls, nil
 }

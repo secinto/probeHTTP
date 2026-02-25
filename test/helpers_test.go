@@ -58,6 +58,27 @@ func statusCodeHandler(code int) http.HandlerFunc {
 	}
 }
 
+// bodyErrorHandler returns 200 with a body that fails mid-read by closing the connection.
+// Used to test redirect body read error handling.
+func bodyErrorHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Header().Set("Content-Length", "1000")
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	w.Write([]byte("partial"))
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		return
+	}
+	conn, _, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	conn.Close()
+}
+
 // multiRedirectHandler creates a chain of redirects
 func multiRedirectHandler(count int, finalHandler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

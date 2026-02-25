@@ -277,6 +277,8 @@ Added to `internal/config/config.go`:
 |------|-------------|---------|
 | `--allow-private` | Allow scanning private IPs | false |
 | `--retries N` | Max retries for failed requests | 0 |
+| `--rate-limit` | Requests per second per host | 10 |
+| `--rate-burst` | Burst size for rate limiter | 1 |
 | `MaxBodySize` | Max response body size | 10 MB |
 
 ---

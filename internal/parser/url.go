@@ -133,9 +133,18 @@ func ValidateURL(input string, allowPrivateIPs bool) error {
 		// Parse IP
 		ip := net.ParseIP(parsed.Host)
 		if ip != nil {
-			// Check if private IP
+			// Reject non-public IP classes unless explicitly allowed.
 			if ip.IsLoopback() || ip.IsPrivate() {
 				return fmt.Errorf("private IP addresses not allowed")
+			}
+			if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				return fmt.Errorf("link-local IP addresses not allowed")
+			}
+			if ip.IsMulticast() {
+				return fmt.Errorf("multicast IP addresses not allowed")
+			}
+			if ip.IsUnspecified() {
+				return fmt.Errorf("unspecified IP addresses not allowed")
 			}
 		}
 	}

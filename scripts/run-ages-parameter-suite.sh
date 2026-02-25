@@ -30,6 +30,7 @@ ALL_TESTS=(
   "17_include_response_header"
   "18_include_response_full"
   "19_store_response"
+  "20_rate_limit"
 )
 
 usage() {
@@ -235,6 +236,7 @@ run_named_test() {
       mkdir -p "$response_dir"
       run_test "$name" -sr -srd "$response_dir"
       ;;
+    "20_rate_limit") run_test "$name" --rate-limit 5 --rate-burst 2 ;;
     *)
       echo "Unknown test name: $name" >&2
       exit 1

@@ -250,7 +250,7 @@ func TestExtractTitle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parser.ExtractTitle(tt.input)
+			got := parser.ExtractTitle(tt.input, "")
 			assertStringEqual(t, got, tt.want, "extractTitle")
 		})
 	}

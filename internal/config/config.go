@@ -31,6 +31,8 @@ type Config struct {
 	MaxRetries         int   // NEW: Maximum number of retries
 	TLSHandshakeTimeout int  // NEW: Timeout for TLS handshake attempts in seconds
 	RateLimitTimeout   int   // NEW: Timeout for rate limit wait in seconds
+	RateLimitPerHost   int   // Requests per second per host (default 10)
+	RateLimitBurst     int   // Burst size for rate limiter (default 1)
 	DisableHTTP3       bool  // NEW: Disable HTTP/3 (QUIC) support
 	DebugLogFile       string // NEW: Debug log file path (optional)
 	Version            bool   // NEW: Show version information
@@ -73,6 +75,8 @@ func New() *Config {
 		MaxRetries:         0,                // No retries by default
 		TLSHandshakeTimeout: 10,              // 10 seconds default
 		RateLimitTimeout:   60,               // 60 seconds default
+		RateLimitPerHost:   10,               // 10 req/s per host default
+		RateLimitBurst:     1,                // burst of 1 default
 		DisableHTTP3:       false,            // HTTP/3 enabled by default
 		Version:            false,
 		StoreResponse:      false,            // Response storage disabled by default
@@ -102,6 +106,11 @@ func ParseFlags() (*Config, error) {
 	// Validate mutually exclusive flags
 	if cfg.UserAgent != "" && cfg.RandomUserAgent {
 		return nil, fmt.Errorf("-ua/--user-agent and -rua/--random-user-agent are mutually exclusive")
+	}
+
+	// Validate numeric constraints
+	if cfg.Concurrency <= 0 {
+		return nil, fmt.Errorf("-c/--concurrency must be greater than 0")
 	}
 
 	// --extract-tls-chain implies --extract-tls

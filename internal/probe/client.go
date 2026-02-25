@@ -98,7 +98,15 @@ func (c *Client) GetLimiter(host string) *rate.Limiter {
 		c.evictOldest()
 	}
 
-	limiter := rate.NewLimiter(10, 1)
+	ratePerSec := c.config.RateLimitPerHost
+	if ratePerSec < 1 {
+		ratePerSec = 1
+	}
+	burst := c.config.RateLimitBurst
+	if burst < 1 {
+		burst = 1
+	}
+	limiter := rate.NewLimiter(rate.Limit(ratePerSec), burst)
 	c.limiters[host] = &limiterEntry{limiter: limiter, lastAccess: time.Now()}
 	return limiter
 }

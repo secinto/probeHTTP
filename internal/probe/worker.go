@@ -24,10 +24,17 @@ func (p *Prober) ProcessURLs(ctx context.Context, urls []string, originalInputMa
 	// Send URLs to workers
 	go func() {
 		for _, url := range urls {
+			// Fast-path cancellation check to avoid enqueueing extra work.
+			if ctx.Err() != nil {
+				close(urlChan)
+				return
+			}
+
 			select {
 			case urlChan <- url:
 			case <-ctx.Done():
-				break
+				close(urlChan)
+				return
 			}
 		}
 		close(urlChan)

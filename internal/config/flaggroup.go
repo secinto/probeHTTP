@@ -144,6 +144,8 @@ func RegisterFlags(cfg *Config) *HelpFormatter {
 	addIntFlag(rateLimit, &cfg.Concurrency, "c", "concurrency", 20, "Concurrent requests")
 	addIntFlag(rateLimit, &cfg.TLSHandshakeTimeout, "tls-timeout", "tls-handshake-timeout", 10, "TLS handshake timeout in seconds")
 	addIntFlag(rateLimit, &cfg.RateLimitTimeout, "", "rate-limit-timeout", 60, "Rate limit wait timeout in seconds")
+	addIntFlag(rateLimit, &cfg.RateLimitPerHost, "", "rate-limit", 10, "Requests per second per host")
+	addIntFlag(rateLimit, &cfg.RateLimitBurst, "", "rate-burst", 1, "Burst size for rate limiter")
 	addIntFlag(rateLimit, &cfg.MaxRetries, "", "retries", 0, "Maximum number of retries for failed requests")
 	formatter.Groups = append(formatter.Groups, rateLimit)
 
