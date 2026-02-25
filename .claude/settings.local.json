@@ -51,7 +51,8 @@
       "Bash(git log:*)",
       "Bash(/tmp/probehttp:*)",
       "Bash(bd sync:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
