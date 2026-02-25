@@ -13,10 +13,20 @@ import (
 	"probeHTTP/internal/config"
 )
 
+// limiterEntry wraps a rate limiter with its last-access time for eviction.
+type limiterEntry struct {
+	limiter    *rate.Limiter
+	lastAccess time.Time
+}
+
+// maxLimiters is the maximum number of per-host rate limiters kept in memory.
+// When exceeded, the least-recently-used entries are evicted.
+const maxLimiters = 10000
+
 // Client wraps an HTTP client with rate limiting capabilities
 type Client struct {
 	httpClient     *http.Client
-	limiters       map[string]*rate.Limiter
+	limiters       map[string]*limiterEntry
 	mu             sync.Mutex
 	config         *config.Config
 	http3Transport *http3.Transport // Track HTTP/3 transport for cleanup
@@ -61,7 +71,7 @@ func NewClient(cfg *config.Config) *Client {
 
 	return &Client{
 		httpClient: httpClient,
-		limiters:   make(map[string]*rate.Limiter),
+		limiters:   make(map[string]*limiterEntry),
 		config:     cfg,
 	}
 }
@@ -71,21 +81,63 @@ func (c *Client) GetHTTPClient() *http.Client {
 	return c.httpClient
 }
 
-// GetLimiter returns a rate limiter for the given host
-// Creates a new limiter if one doesn't exist
-// Rate: 10 requests per second per host
+// GetLimiter returns a rate limiter for the given host.
+// Creates a new limiter if one doesn't exist.
+// Evicts least-recently-used entries when the map exceeds maxLimiters.
 func (c *Client) GetLimiter(host string) *rate.Limiter {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if limiter, exists := c.limiters[host]; exists {
-		return limiter
+	if entry, exists := c.limiters[host]; exists {
+		entry.lastAccess = time.Now()
+		return entry.limiter
 	}
 
-	// Allow 10 requests per second per host with burst of 1
+	// Evict oldest entries if at capacity
+	if len(c.limiters) >= maxLimiters {
+		c.evictOldest()
+	}
+
 	limiter := rate.NewLimiter(10, 1)
-	c.limiters[host] = limiter
+	c.limiters[host] = &limiterEntry{limiter: limiter, lastAccess: time.Now()}
 	return limiter
+}
+
+// evictOldest removes the 10% oldest entries from the limiter map.
+// Caller must hold c.mu.
+func (c *Client) evictOldest() {
+	// Find the oldest 10% of entries to evict
+	evictCount := len(c.limiters) / 10
+	if evictCount < 1 {
+		evictCount = 1
+	}
+
+	type hostTime struct {
+		host string
+		t    time.Time
+	}
+	oldest := make([]hostTime, 0, evictCount+1)
+
+	for host, entry := range c.limiters {
+		if len(oldest) < evictCount {
+			oldest = append(oldest, hostTime{host, entry.lastAccess})
+		} else {
+			// Find the newest in our "oldest" slice and replace if this entry is older
+			maxIdx := 0
+			for i := 1; i < len(oldest); i++ {
+				if oldest[i].t.After(oldest[maxIdx].t) {
+					maxIdx = i
+				}
+			}
+			if entry.lastAccess.Before(oldest[maxIdx].t) {
+				oldest[maxIdx] = hostTime{host, entry.lastAccess}
+			}
+		}
+	}
+
+	for _, ht := range oldest {
+		delete(c.limiters, ht.host)
+	}
 }
 
 // SetIPTracker sets the IP tracker for recording resolved IPs
@@ -129,7 +181,7 @@ func NewClientWithTLSConfig(cfg *config.Config, tlsConfig *tls.Config) *Client {
 
 	return &Client{
 		httpClient: httpClient,
-		limiters:   make(map[string]*rate.Limiter),
+		limiters:   make(map[string]*limiterEntry),
 		config:     cfg,
 	}
 }

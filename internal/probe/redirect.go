@@ -16,7 +16,8 @@ import (
 // followRedirects manually follows HTTP redirects and captures the status code and host chains.
 // Returns the final response, complete status code chain, host chain, per-hop ChainEntries, and any error.
 // ChainEntries are only populated when StoreResponse is enabled.
-func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response, maxRedirects int, startStep int, initialHostname string, buf *strings.Builder) (*http.Response, []int, []string, []storage.ChainEntry, error) {
+// The httpClient parameter specifies which client to use for redirect requests.
+func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response, maxRedirects int, startStep int, initialHostname string, buf *strings.Builder, httpClient *http.Client) (*http.Response, []int, []string, []storage.ChainEntry, error) {
 	statusChain := []int{initialResp.StatusCode}
 	hostChain := []string{initialHostname}
 	var chainEntries []storage.ChainEntry
@@ -103,7 +104,7 @@ func (p *Prober) followRedirects(ctx context.Context, initialResp *http.Response
 
 		// Execute request
 		requestStart := time.Now()
-		nextResp, err := p.client.GetHTTPClient().Do(req)
+		nextResp, err := httpClient.Do(req)
 		requestElapsed := time.Since(requestStart)
 		if err != nil {
 			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("redirect request failed: %v", err)

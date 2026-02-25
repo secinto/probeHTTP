@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"probeHTTP/internal/cdn"
 	"probeHTTP/internal/config"
 	"probeHTTP/internal/hash"
@@ -25,14 +27,22 @@ import (
 	"probeHTTP/pkg/useragent"
 )
 
+// cachedClient wraps an HTTP client with its cleanup function for the client cache.
+type cachedClient struct {
+	client  *http.Client
+	cleanup func()
+}
+
 // Prober handles HTTP probing operations
 type Prober struct {
-	client       *Client
-	config       *config.Config
-	ipTracker    *IPTracker
-	techDetector *tech.Detector
-	cnameCache   sync.Map // hostname -> CNAME string
-	cnameMutex   sync.Mutex // protects concurrent CNAME lookups
+	client        *Client
+	config        *config.Config
+	ipTracker     *IPTracker
+	techDetector  *tech.Detector
+	cnameCache    sync.Map            // hostname -> CNAME string
+	cnameFlight   singleflight.Group // per-hostname dedup for CNAME lookups
+	clientCache   map[string]*cachedClient // strategy:protocol -> cached client
+	clientCacheMu sync.Mutex
 	// Mutex for atomic stderr writes when flushing debug buffers
 	stderrMutex  sync.Mutex
 	cleanupFuncs []func() error
@@ -45,6 +55,7 @@ func NewProber(cfg *config.Config) *Prober {
 		client:       NewClient(cfg),
 		config:       cfg,
 		cleanupFuncs: make([]func() error, 0),
+		clientCache:  make(map[string]*cachedClient),
 	}
 	if cfg.ResolveIP {
 		p.ipTracker = NewIPTracker()
@@ -73,6 +84,15 @@ func (p *Prober) Close() error {
 		}
 	}
 
+	// Clean up cached TLS clients
+	p.clientCacheMu.Lock()
+	for _, cc := range p.clientCache {
+		if cc.cleanup != nil {
+			cc.cleanup()
+		}
+	}
+	p.clientCacheMu.Unlock()
+
 	if err := p.client.Close(); err != nil {
 		errs = append(errs, err)
 	}
@@ -81,6 +101,101 @@ func (p *Prober) Close() error {
 		return fmt.Errorf("cleanup errors: %v", errs)
 	}
 	return nil
+}
+
+// getOrCreateClient returns a cached HTTP client for the given TLS strategy and protocol,
+// creating one if it doesn't exist yet. Clients are reused across requests to preserve
+// connection pooling.
+func (p *Prober) getOrCreateClient(strategy TLSStrategy, protocol string) *http.Client {
+	key := strategy.Name + ":" + protocol
+
+	p.clientCacheMu.Lock()
+	defer p.clientCacheMu.Unlock()
+
+	if cached, ok := p.clientCache[key]; ok {
+		return cached.client
+	}
+
+	tlsConfig := BuildTLSConfig(strategy, p.config)
+
+	var httpClient *http.Client
+	var cleanup func()
+
+	switch protocol {
+	case "HTTP/3":
+		client, transport := NewHTTP3Client(p.config, tlsConfig)
+		httpClient = client
+		cleanup = func() { transport.Close() }
+	case "HTTP/2":
+		httpClient = NewHTTP2Client(p.config, tlsConfig)
+		if p.ipTracker != nil {
+			if transport, ok := httpClient.Transport.(*http.Transport); ok {
+				dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+				transport.DialContext = p.ipTracker.DialContext(dialer)
+			}
+		}
+		cleanup = func() {
+			if transport, ok := httpClient.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
+	default: // HTTP/1.1
+		httpClient = NewHTTP11Client(p.config, tlsConfig)
+		if p.ipTracker != nil {
+			if transport, ok := httpClient.Transport.(*http.Transport); ok {
+				dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+				transport.DialContext = p.ipTracker.DialContext(dialer)
+			}
+		}
+		cleanup = func() {
+			if transport, ok := httpClient.Transport.(*http.Transport); ok {
+				transport.CloseIdleConnections()
+			}
+		}
+	}
+
+	p.clientCache[key] = &cachedClient{client: httpClient, cleanup: cleanup}
+
+	if p.config.DebugLogger != nil {
+		p.config.DebugLogger.Debug("created and cached client", "strategy", strategy.Name, "protocol", protocol)
+	}
+
+	return httpClient
+}
+
+// resolveCNAME resolves and caches the CNAME record for the given hostname.
+// Uses singleflight to deduplicate concurrent lookups for the same hostname
+// without blocking lookups for different hostnames.
+func (p *Prober) resolveCNAME(hostname string, result *output.ProbeResult) {
+	if !p.config.DetectCNAME {
+		return
+	}
+
+	if cachedCNAME, ok := p.cnameCache.Load(hostname); ok {
+		if cname := cachedCNAME.(string); cname != "" && cname != hostname+"." {
+			result.CNAME = strings.TrimSuffix(cname, ".")
+		}
+		return
+	}
+
+	// singleflight deduplicates concurrent lookups for the same hostname
+	// while allowing different hostnames to resolve concurrently.
+	v, _, _ := p.cnameFlight.Do(hostname, func() (interface{}, error) {
+		// Double-check cache after winning the flight
+		if cachedCNAME, ok := p.cnameCache.Load(hostname); ok {
+			return cachedCNAME.(string), nil
+		}
+		cname, err := net.LookupCNAME(hostname)
+		if err != nil {
+			cname = "" // cache empty string for failed lookups
+		}
+		p.cnameCache.Store(hostname, cname)
+		return cname, nil
+	})
+
+	if cname := v.(string); cname != "" && cname != hostname+"." {
+		result.CNAME = strings.TrimSuffix(cname, ".")
+	}
 }
 
 // ProbeURL performs the HTTP probe for a single URL with retry support
@@ -154,12 +269,12 @@ func (p *Prober) probeURLOnce(ctx context.Context, probeURL string, originalInpu
 	// or "Host: example.com:80" for HTTP.
 	probeURL = stripDefaultPort(parsedURL)
 
-	// For HTTPS URLs, use parallel TLS attempts
+	// For HTTPS URLs, use sequential TLS fallback
 	if parsedURL.Scheme == "https" {
 		if p.config.DebugLogger != nil {
-			p.config.DebugLogger.Info("probing HTTPS URL with parallel TLS", "url", probeURL)
+			p.config.DebugLogger.Info("probing HTTPS URL with TLS fallback", "url", probeURL)
 		}
-		return p.probeURLWithParallelTLS(ctx, probeURL, originalInput)
+		return p.probeURLWithTLSFallback(ctx, probeURL, originalInput)
 	}
 
 	// For HTTP URLs, use the standard probe method
@@ -171,7 +286,6 @@ func (p *Prober) probeURLOnce(ctx context.Context, probeURL string, originalInpu
 
 // probeURLHTTP performs a standard HTTP probe (no TLS)
 func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInput string) output.ProbeResult {
-	// Create debug buffer for collecting all debug output for this URL
 	var debugBuf strings.Builder
 
 	result := output.ProbeResult{
@@ -185,50 +299,18 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		p.config.DebugLogger.Info("probing HTTP URL", "url", probeURL)
 	}
 
-	// Parse URL to validate and extract hostname
 	parsedURL, err := url.Parse(probeURL)
 	if err != nil {
 		result.Error = fmt.Sprintf("Invalid URL: %v", err)
 		p.logError("failed to parse URL", "url", probeURL, "error", err)
-		if p.config.DebugLogger != nil {
-			p.config.DebugLogger.Error("failed to parse URL", "url", probeURL, "error", err)
-		}
-		p.flushDebugBuffer(&debugBuf)
 		return result
 	}
 
-	// Extract hostname for rate limiting
 	hostname := parsedURL.Hostname()
-
-	// CNAME resolution (early, before HTTP request)
-	if p.config.DetectCNAME {
-		if cachedCNAME, ok := p.cnameCache.Load(hostname); ok {
-			if cname := cachedCNAME.(string); cname != "" && cname != hostname+"." {
-				result.CNAME = strings.TrimSuffix(cname, ".")
-			}
-		} else {
-			// Serialize CNAME lookups to avoid CGO double-free
-			p.cnameMutex.Lock()
-			// Double-check after acquiring lock
-			if cachedCNAME, ok := p.cnameCache.Load(hostname); ok {
-				p.cnameMutex.Unlock()
-				if cname := cachedCNAME.(string); cname != "" && cname != hostname+"." {
-					result.CNAME = strings.TrimSuffix(cname, ".")
-				}
-			} else {
-				cname, lookupErr := net.LookupCNAME(hostname)
-				if lookupErr == nil && cname != "" && cname != hostname+"." {
-					result.CNAME = strings.TrimSuffix(cname, ".")
-				}
-				p.cnameCache.Store(hostname, cname)
-				p.cnameMutex.Unlock()
-			}
-		}
-	}
+	p.resolveCNAME(hostname, &result)
 
 	// Apply rate limiting per host with timeout
 	limiter := p.client.GetLimiter(hostname)
-
 	waitCtx, waitCancel := context.WithTimeout(ctx, time.Duration(p.config.RateLimitTimeout)*time.Second)
 	defer waitCancel()
 
@@ -241,14 +323,11 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		if p.config.DebugLogger != nil {
 			p.config.DebugLogger.Warn("rate limit wait failed", "url", probeURL, "error", err)
 		}
-		p.flushDebugBuffer(&debugBuf)
 		return result
 	}
 
-	// Debug: print separator at start of probe
 	p.debugPrintSeparator(&debugBuf)
 
-	// Create HTTP request with context
 	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
 	if err != nil {
 		result.Error = fmt.Sprintf("Failed to create request: %v", err)
@@ -257,21 +336,17 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		return result
 	}
 
-	// Set browser-like headers
 	req.Header.Set("User-Agent", useragent.Get(p.config.UserAgent, p.config.RandomUserAgent))
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
-	// Capture raw request if storage or include-response is enabled
 	var rawRequest string
 	if p.config.StoreResponse || p.config.IncludeResponse {
 		rawRequest = formatRawRequest(req)
 	}
 
-	// Debug: log initial request
 	p.debugRequest(req, 1, &debugBuf)
 
-	// Make HTTP request
 	startTime := time.Now()
 	resp, err := p.client.GetHTTPClient().Do(req)
 	elapsed := time.Since(startTime)
@@ -280,11 +355,7 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		result.Error = fmt.Sprintf("Request failed: %v", err)
 		p.logError("request failed", "url", probeURL, "error", err)
 		if p.config.DebugLogger != nil {
-			p.config.DebugLogger.Error("HTTP request failed",
-				"url", probeURL,
-				"error", err,
-				"duration", elapsed,
-			)
+			p.config.DebugLogger.Error("HTTP request failed", "url", probeURL, "error", err, "duration", elapsed)
 		}
 		p.debugPrintSeparator(&debugBuf)
 		p.flushDebugBuffer(&debugBuf)
@@ -292,54 +363,73 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	}
 
 	if p.config.DebugLogger != nil {
-		p.config.DebugLogger.Info("HTTP request succeeded",
-			"url", probeURL,
-			"status_code", resp.StatusCode,
-			"duration", elapsed,
-		)
+		p.config.DebugLogger.Info("HTTP request succeeded", "url", probeURL, "status_code", resp.StatusCode, "duration", elapsed)
 	}
 
-	// PERFORMANCE FIX: Use TeeReader for single-pass body reading in debug mode
+	state := &probeState{
+		probeURL:   probeURL,
+		parsedURL:  parsedURL,
+		req:        req,
+		rawRequest: rawRequest,
+		httpClient: p.client.GetHTTPClient(),
+		elapsed:    elapsed,
+		probeStart: startTime,
+		debugBuf:   &debugBuf,
+	}
+	p.processResponse(ctx, resp, state, &result)
+	return result
+}
+
+// probeState carries per-request context needed by processResponse.
+type probeState struct {
+	probeURL   string
+	parsedURL  *url.URL
+	req        *http.Request
+	rawRequest string
+	httpClient *http.Client
+	elapsed    time.Duration    // initial request duration (for debug logging)
+	probeStart time.Time        // start of entire probe (for result.Time)
+	debugBuf   *strings.Builder
+	tlsState   *tls.ConnectionState // nil for plain HTTP
+}
+
+// processResponse reads the response body, follows redirects, extracts metadata,
+// and populates the ProbeResult. The caller must set protocol-specific fields
+// (Protocol, TLSConfigStrategy, TLS info) on result before calling.
+// The response body is consumed and closed by this method.
+func (p *Prober) processResponse(ctx context.Context, resp *http.Response, state *probeState, result *output.ProbeResult) {
+	// Read body with optional debug tee and size limit
 	var bodyBuffer bytes.Buffer
 	var bodyReader io.Reader = resp.Body
-
 	if p.config.Debug {
 		bodyReader = io.TeeReader(resp.Body, &bodyBuffer)
 	}
-
-	// SECURITY FIX: Add response body size limit
 	limitedReader := io.LimitReader(bodyReader, p.config.MaxBodySize)
-
-	// Read initial response body
 	initialBody, err := io.ReadAll(limitedReader)
-	resp.Body.Close()
+	resp.Body.Close() // Explicitly close transport body (fixes connection leak)
 
 	if err != nil {
 		result.Error = fmt.Sprintf("Error reading body: %v", err)
-		p.logError("failed to read body", "url", probeURL, "error", err)
-		p.flushDebugBuffer(&debugBuf)
-		return result
+		p.logError("failed to read body", "url", state.probeURL, "error", err)
+		p.flushDebugBuffer(state.debugBuf)
+		return
 	}
 
-	// Check if body was truncated
 	if int64(len(initialBody)) >= p.config.MaxBodySize {
 		p.config.Logger.Warn("response body truncated",
-			"url", probeURL,
+			"url", state.probeURL,
 			"max_size", p.config.MaxBodySize,
 		)
 	}
 
-	// Debug: log initial response (use buffered body if available)
+	// Debug: log initial response
 	debugBody := initialBody
 	if p.config.Debug && bodyBuffer.Len() > 0 {
 		debugBody = bodyBuffer.Bytes()
 	}
-	p.debugResponse(resp, debugBody, elapsed, 1, &debugBuf)
+	p.debugResponse(resp, debugBody, state.elapsed, 1, state.debugBuf)
 
-	// Extract initial hostname for redirect tracking
-	initialHostname := parsedURL.Hostname()
-
-	// Save initial response body and headers for chain entry before redirects overwrite initialBody
+	// Save initial response body and headers for storage before redirects
 	initialResponseBody := make([]byte, len(initialBody))
 	copy(initialResponseBody, initialBody)
 	var initialRawResponse string
@@ -347,43 +437,52 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		initialRawResponse = formatRawResponse(resp)
 	}
 
-	// Follow redirects manually if enabled to capture the chain
+	initialHostname := state.parsedURL.Hostname()
+
+	// Follow redirects manually if enabled
 	var finalResp *http.Response
 	var statusChain []int
 	var hostChain []string
 	var chainEntries []storage.ChainEntry
 
 	if p.config.FollowRedirects && (resp.StatusCode >= 300 && resp.StatusCode < 400) {
-		// Response is a redirect and we should follow it
-		// Recreate response body for redirect following
 		resp.Body = io.NopCloser(bytes.NewReader(initialBody))
 		var redirectChainEntries []storage.ChainEntry
-		finalResp, statusChain, hostChain, redirectChainEntries, err = p.followRedirects(ctx, resp, p.config.MaxRedirects, 1, initialHostname, &debugBuf)
+		finalResp, statusChain, hostChain, redirectChainEntries, err = p.followRedirects(ctx, resp, p.config.MaxRedirects, 1, initialHostname, state.debugBuf, state.httpClient)
 		chainEntries = redirectChainEntries
 		if err != nil {
 			result.Error = fmt.Sprintf("Redirect error: %v", err)
 			result.ChainStatusCodes = statusChain
 			result.ChainHosts = hostChain
-			p.logError("redirect error", "url", probeURL, "error", err)
-			p.debugPrintSeparator(&debugBuf)
-			p.flushDebugBuffer(&debugBuf)
-			return result
+			if finalResp != nil && finalResp.Body != nil {
+				finalResp.Body.Close()
+			}
+			p.logError("redirect error", "url", state.probeURL, "error", err)
+			p.debugPrintSeparator(state.debugBuf)
+			p.flushDebugBuffer(state.debugBuf)
+			return
 		}
 		// Read final response body
 		finalResp.Body = io.NopCloser(io.LimitReader(finalResp.Body, p.config.MaxBodySize))
-		initialBody, _ = io.ReadAll(finalResp.Body)
+		initialBody, err = io.ReadAll(finalResp.Body)
+		if err != nil {
+			p.config.Logger.Warn("error reading final response body",
+				"url", state.probeURL,
+				"error", err,
+			)
+			result.Error = fmt.Sprintf("partial body read: %v", err)
+		}
 		finalResp.Body.Close()
 	} else {
-		// Not a redirect or not following redirects
 		finalResp = resp
 		statusChain = []int{resp.StatusCode}
 		hostChain = []string{initialHostname}
 	}
 
-	// Debug: print separator at end of probe
-	p.debugPrintSeparator(&debugBuf)
+	// Debug: print separator
+	p.debugPrintSeparator(state.debugBuf)
 
-	// Extract final URL after redirects
+	// Extract final URL
 	finalURL := finalResp.Request.URL.String()
 	finalParsedURL := finalResp.Request.URL
 
@@ -392,13 +491,17 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	result.Hash.HeaderMMH3 = hash.CalculateHeaderMMH3(finalResp.Header)
 
 	// Extract metadata
-	result.URL = probeURL
+	result.URL = state.probeURL
 	result.FinalURL = finalURL
 	result.ChainStatusCodes = statusChain
 	result.ChainHosts = hostChain
 	result.StatusCode = finalResp.StatusCode
 	result.ContentLength = len(initialBody)
-	result.Time = elapsed.String()
+	if !state.probeStart.IsZero() {
+		result.Time = time.Since(state.probeStart).String()
+	} else {
+		result.Time = state.elapsed.String()
+	}
 	result.WebServer = finalResp.Header.Get("Server")
 	result.ContentType = finalResp.Header.Get("Content-Type")
 
@@ -436,7 +539,7 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 	}
 
 	// HSTS detection
-	if p.config.DetectHSTS && finalResp != nil {
+	if p.config.DetectHSTS {
 		if hstsHeader := finalResp.Header.Get("Strict-Transport-Security"); hstsHeader != "" {
 			result.HSTS = true
 			result.HSTSHeader = hstsHeader
@@ -455,73 +558,62 @@ func (p *Prober) probeURLHTTP(ctx context.Context, probeURL string, originalInpu
 		result.CDNName = cdnName
 	}
 
-	// Domain discovery from CSP headers (HTTP path — no TLS certificates)
+	// Domain discovery from certificate SANs/CN and CSP headers
 	if p.config.DiscoverDomains {
-		result.DiscoveredDomains = DiscoverDomains(nil, finalResp.Header, parsedURL.Hostname())
+		result.DiscoveredDomains = DiscoverDomains(state.tlsState, finalResp.Header, state.parsedURL.Hostname())
 	}
 
-	// Handle response storage and JSON output options
+	// Response headers in JSON output
 	if p.config.IncludeResponseHeader {
 		result.ResponseHeaders = normalizeHeaders(finalResp.Header)
-		result.RequestHeaders = normalizeHeaders(req.Header)
+		result.RequestHeaders = normalizeHeaders(state.req.Header)
 	}
 
 	if p.config.IncludeResponse {
-		result.RawRequest = rawRequest
+		result.RawRequest = state.rawRequest
 		result.RawResponse = formatRawResponse(finalResp)
 	}
 
+	// Storage
 	if p.config.StoreResponse {
-		// Build initial hop entry (first request/response before any redirects)
 		initialEntry := storage.ChainEntry{
-			RawRequest:  rawRequest,
+			RawRequest:  state.rawRequest,
 			RawResponse: initialRawResponse,
 			Body:        initialResponseBody,
 		}
-
-		// Build full chain: initial hop + redirect hops
 		fullChain := append([]storage.ChainEntry{initialEntry}, chainEntries...)
-
-		// If redirects occurred, the last chain entry already has the final response.
-		// If no redirects, the initial entry IS the only entry (with the final body).
-		// Update the last entry's body to use the final body (which may have been re-read).
 		if len(chainEntries) > 0 {
-			// Last redirect entry body was already captured in followRedirects;
-			// but we re-read the final body above — update it.
 			fullChain[len(fullChain)-1].Body = initialBody
 		}
 
 		storedData := storage.FormatStoredResponse(fullChain, finalURL)
-		storagePath, err := storage.StoreResponse(p.config.StoreResponseDir, finalParsedURL, storedData)
-		if err != nil {
+		storagePath, storeErr := storage.StoreResponse(p.config.StoreResponseDir, finalParsedURL, storedData)
+		if storeErr != nil {
 			p.config.Logger.Warn("failed to store response",
-				"url", probeURL,
-				"error", err,
+				"url", state.probeURL,
+				"error", storeErr,
 			)
 		} else {
 			result.StoredResponsePath = storagePath
-			// Append to index.txt
-			storage.AppendToIndex(p.config.StoreResponseDir, storagePath, probeURL,
+			storage.AppendToIndex(p.config.StoreResponseDir, storagePath, state.probeURL,
 				result.StatusCode, http.StatusText(result.StatusCode))
 		}
 	}
 
-	// Flush debug buffer atomically to stderr
-	p.flushDebugBuffer(&debugBuf)
+	// Flush debug buffer
+	p.flushDebugBuffer(state.debugBuf)
 
 	p.config.Logger.Debug("probe completed",
-		"url", probeURL,
+		"url", state.probeURL,
 		"status", result.StatusCode,
-		"duration", elapsed,
+		"duration", state.elapsed,
 	)
-
-	return result
 }
 
-// probeURLWithParallelTLS performs sequential TLS fallback for HTTPS URLs.
+// probeURLWithTLSFallback performs sequential TLS strategy fallback for HTTPS URLs.
 // It tries strategies in compatibility order and returns the first successful
 // HTTP response. Only connection-level errors trigger fallback to the next strategy.
-func (p *Prober) probeURLWithParallelTLS(ctx context.Context, probeURL string, originalInput string) output.ProbeResult {
+func (p *Prober) probeURLWithTLSFallback(ctx context.Context, probeURL string, originalInput string) output.ProbeResult {
 	// Extract hostname for rate limiting
 	parsedURL, err := url.Parse(probeURL)
 	if err != nil {
@@ -722,81 +814,19 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 	var debugBuf strings.Builder
 
 	result := output.ProbeResult{
-		Timestamp:        time.Now().Format(time.RFC3339),
-		Input:            originalInput,
-		Method:           "GET",
-		Protocol:         protocol,
+		Timestamp:          time.Now().Format(time.RFC3339),
+		Input:              originalInput,
+		Method:             "GET",
+		Protocol:           protocol,
 		TLSConfigStrategy: strategy.Name,
 	}
 
-	// Log attempt to debug file if enabled
 	if p.config.DebugLogger != nil {
 		p.config.DebugLogger.Debug("attempting TLS connection",
-			"url", probeURL,
-			"strategy", strategy.Name,
-			"protocol", protocol,
-			"tls_min_version", strategy.MinVersion,
-			"tls_max_version", strategy.MaxVersion,
-		)
+			"url", probeURL, "strategy", strategy.Name, "protocol", protocol,
+			"tls_min_version", strategy.MinVersion, "tls_max_version", strategy.MaxVersion)
 	}
 
-	// Build TLS config
-	tlsConfig := BuildTLSConfig(strategy, p.config)
-
-	// Create appropriate client based on protocol
-	var httpClient *http.Client
-	var cleanup func()
-
-	switch protocol {
-	case "HTTP/3":
-		client, transport := NewHTTP3Client(p.config, tlsConfig)
-		httpClient = client
-		cleanup = func() {
-			transport.Close()
-		}
-		if p.config.DebugLogger != nil {
-			p.config.DebugLogger.Debug("created HTTP/3 client", "url", probeURL)
-		}
-	case "HTTP/2":
-		httpClient = NewHTTP2Client(p.config, tlsConfig)
-		if p.ipTracker != nil {
-			if transport, ok := httpClient.Transport.(*http.Transport); ok {
-				dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-				transport.DialContext = p.ipTracker.DialContext(dialer)
-			}
-		}
-		cleanup = func() {
-			if transport, ok := httpClient.Transport.(*http.Transport); ok {
-				transport.CloseIdleConnections()
-			}
-		}
-		if p.config.DebugLogger != nil {
-			p.config.DebugLogger.Debug("created HTTP/2 client", "url", probeURL)
-		}
-	default: // HTTP/1.1
-		httpClient = NewHTTP11Client(p.config, tlsConfig)
-		if p.ipTracker != nil {
-			if transport, ok := httpClient.Transport.(*http.Transport); ok {
-				dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-				transport.DialContext = p.ipTracker.DialContext(dialer)
-			}
-		}
-		cleanup = func() {
-			if transport, ok := httpClient.Transport.(*http.Transport); ok {
-				transport.CloseIdleConnections()
-			}
-		}
-		if p.config.DebugLogger != nil {
-			p.config.DebugLogger.Debug("created HTTP/1.1 client", "url", probeURL)
-		}
-	}
-
-	// Ensure cleanup happens
-	if cleanup != nil {
-		defer cleanup()
-	}
-
-	// Parse URL
 	parsedURL, err := url.Parse(probeURL)
 	if err != nil {
 		result.Error = fmt.Sprintf("Invalid URL: %v", err)
@@ -806,37 +836,13 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		return result
 	}
 
-	// CNAME resolution (early, before HTTP request)
-	if p.config.DetectCNAME {
-		cnameHost := parsedURL.Hostname()
-		if cachedCNAME, ok := p.cnameCache.Load(cnameHost); ok {
-			if cname := cachedCNAME.(string); cname != "" && cname != cnameHost+"." {
-				result.CNAME = strings.TrimSuffix(cname, ".")
-			}
-		} else {
-			// Serialize CNAME lookups to avoid CGO double-free
-			p.cnameMutex.Lock()
-			// Double-check after acquiring lock
-			if cachedCNAME, ok := p.cnameCache.Load(cnameHost); ok {
-				p.cnameMutex.Unlock()
-				if cname := cachedCNAME.(string); cname != "" && cname != cnameHost+"." {
-					result.CNAME = strings.TrimSuffix(cname, ".")
-				}
-			} else {
-				cname, lookupErr := net.LookupCNAME(cnameHost)
-				if lookupErr == nil && cname != "" && cname != cnameHost+"." {
-					result.CNAME = strings.TrimSuffix(cname, ".")
-				}
-				p.cnameCache.Store(cnameHost, cname)
-				p.cnameMutex.Unlock()
-			}
-		}
-	}
+	p.resolveCNAME(parsedURL.Hostname(), &result)
 
-	// Debug: print separator at start of probe
 	p.debugPrintSeparator(&debugBuf)
 
-	// Create HTTP request with context
+	// Get or create cached client for this strategy+protocol
+	httpClient := p.getOrCreateClient(strategy, protocol)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
 	if err != nil {
 		result.Error = fmt.Sprintf("Failed to create request: %v", err)
@@ -844,36 +850,27 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		return result
 	}
 
-	// Set browser-like headers
 	req.Header.Set("User-Agent", useragent.Get(p.config.UserAgent, p.config.RandomUserAgent))
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
-	// Capture raw request if storage or include-response is enabled
-	var rawRequestTLS string
+	var rawRequest string
 	if p.config.StoreResponse || p.config.IncludeResponse {
-		rawRequestTLS = formatRawRequest(req)
+		rawRequest = formatRawRequest(req)
 	}
 
-	// Debug: log initial request
 	p.debugRequest(req, 1, &debugBuf)
 
-	// Make HTTP request
 	startTime := time.Now()
 	resp, err := httpClient.Do(req)
 	elapsed := time.Since(startTime)
 
 	if err != nil {
-		errorMsg := fmt.Sprintf("Request failed: %v", err)
-		result.Error = errorMsg
+		result.Error = fmt.Sprintf("Request failed: %v", err)
 		if p.config.DebugLogger != nil {
 			p.config.DebugLogger.Error("request failed",
-				"url", probeURL,
-				"strategy", strategy.Name,
-				"protocol", protocol,
-				"error", err,
-				"duration", elapsed,
-			)
+				"url", probeURL, "strategy", strategy.Name, "protocol", protocol,
+				"error", err, "duration", elapsed)
 		}
 		p.flushDebugBuffer(&debugBuf)
 		return result
@@ -881,20 +878,14 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 
 	if p.config.DebugLogger != nil {
 		p.config.DebugLogger.Info("request succeeded",
-			"url", probeURL,
-			"strategy", strategy.Name,
-			"protocol", protocol,
-			"status_code", resp.StatusCode,
-			"duration", elapsed,
-		)
+			"url", probeURL, "strategy", strategy.Name, "protocol", protocol,
+			"status_code", resp.StatusCode, "duration", elapsed)
 		if resp.TLS != nil {
 			p.config.DebugLogger.Debug("TLS connection details",
 				"tls_version", getTLSVersionString(resp.TLS.Version),
-				"cipher_suite", tls.CipherSuiteName(resp.TLS.CipherSuite),
-			)
+				"cipher_suite", tls.CipherSuiteName(resp.TLS.CipherSuite))
 		}
 	}
-	defer resp.Body.Close()
 
 	// Extract TLS connection state if available
 	if resp.TLS != nil {
@@ -904,8 +895,6 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 			Version: result.TLSVersion,
 			Cipher:  result.CipherSuite,
 		}
-
-		// Extract certificate details (opt-in via --extract-tls)
 		if p.config.ExtractTLS {
 			result.TLS.Certificate = ExtractCertificateInfo(resp.TLS)
 			if p.config.ExtractTLSChain {
@@ -914,215 +903,19 @@ func (p *Prober) probeURLWithConfig(ctx context.Context, probeURL string, origin
 		}
 	}
 
-	// Read response body
-	var bodyBuffer bytes.Buffer
-	var bodyReader io.Reader = resp.Body
-
-	if p.config.Debug {
-		bodyReader = io.TeeReader(resp.Body, &bodyBuffer)
+	// Process response (shared logic handles body read, redirects, metadata)
+	state := &probeState{
+		probeURL:   probeURL,
+		parsedURL:  parsedURL,
+		req:        req,
+		rawRequest: rawRequest,
+		httpClient: httpClient,
+		elapsed:    elapsed,
+		probeStart: startTime,
+		debugBuf:   &debugBuf,
+		tlsState:   resp.TLS,
 	}
-
-	limitedReader := io.LimitReader(bodyReader, p.config.MaxBodySize)
-	initialBody, err := io.ReadAll(limitedReader)
-
-	if err != nil {
-		result.Error = fmt.Sprintf("Error reading body: %v", err)
-		p.flushDebugBuffer(&debugBuf)
-		return result
-	}
-
-	// Check if body was truncated
-	if int64(len(initialBody)) >= p.config.MaxBodySize {
-		p.config.Logger.Warn("response body truncated",
-			"url", probeURL,
-			"max_size", p.config.MaxBodySize,
-		)
-	}
-
-	// Debug: log initial response
-	debugBody := initialBody
-	if p.config.Debug && bodyBuffer.Len() > 0 {
-		debugBody = bodyBuffer.Bytes()
-	}
-	p.debugResponse(resp, debugBody, elapsed, 1, &debugBuf)
-
-	// Save initial response body and headers for chain entry before redirects overwrite initialBody
-	initialResponseBodyTLS := make([]byte, len(initialBody))
-	copy(initialResponseBodyTLS, initialBody)
-	var initialRawResponseTLS string
-	if p.config.StoreResponse {
-		initialRawResponseTLS = formatRawResponse(resp)
-	}
-
-	// Extract initial hostname for redirect tracking
-	initialHostname := parsedURL.Hostname()
-
-	// Follow redirects manually if enabled
-	var finalResp *http.Response
-	var statusChain []int
-	var hostChain []string
-	var chainEntriesTLS []storage.ChainEntry
-
-	if p.config.FollowRedirects && (resp.StatusCode >= 300 && resp.StatusCode < 400) {
-		// Recreate response body for redirect following
-		resp.Body = io.NopCloser(bytes.NewReader(initialBody))
-		var redirectChainEntries []storage.ChainEntry
-		finalResp, statusChain, hostChain, redirectChainEntries, err = p.followRedirectsWithClient(ctx, resp, p.config.MaxRedirects, 1, initialHostname, &debugBuf, httpClient)
-		chainEntriesTLS = redirectChainEntries
-		if err != nil {
-			result.Error = fmt.Sprintf("Redirect error: %v", err)
-			result.ChainStatusCodes = statusChain
-			result.ChainHosts = hostChain
-			// Close finalResp body if it exists
-			if finalResp != nil && finalResp.Body != nil {
-				finalResp.Body.Close()
-			}
-			p.flushDebugBuffer(&debugBuf)
-			return result
-		}
-		// Read final response body
-		finalResp.Body = io.NopCloser(io.LimitReader(finalResp.Body, p.config.MaxBodySize))
-		bodyReadErr := error(nil)
-		initialBody, bodyReadErr = io.ReadAll(finalResp.Body)
-		if bodyReadErr != nil {
-			p.config.Logger.Warn("error reading final response body",
-				"url", probeURL,
-				"error", bodyReadErr,
-			)
-			result.Error = fmt.Sprintf("partial body read: %v", bodyReadErr)
-		}
-		finalResp.Body.Close()
-	} else {
-		finalResp = resp
-		statusChain = []int{resp.StatusCode}
-		hostChain = []string{initialHostname}
-	}
-
-	// Debug: print separator at end of probe
-	p.debugPrintSeparator(&debugBuf)
-
-	// Extract final URL after redirects
-	finalURL := finalResp.Request.URL.String()
-	finalParsedURL := finalResp.Request.URL
-
-	// Calculate hashes
-	result.Hash.BodyMMH3 = hash.CalculateMMH3(initialBody)
-	result.Hash.HeaderMMH3 = hash.CalculateHeaderMMH3(finalResp.Header)
-
-	// Extract metadata
-	result.URL = probeURL
-	result.FinalURL = finalURL
-	result.ChainStatusCodes = statusChain
-	result.ChainHosts = hostChain
-	result.StatusCode = finalResp.StatusCode
-	result.ContentLength = len(initialBody)
-	result.Time = elapsed.String()
-	result.WebServer = finalResp.Header.Get("Server")
-	result.ContentType = finalResp.Header.Get("Content-Type")
-
-	// Parse URL components
-	result.Scheme = finalParsedURL.Scheme
-	result.Host = finalParsedURL.Hostname()
-	result.Path = finalParsedURL.Path
-	if result.Path == "" {
-		result.Path = "/"
-	}
-
-	// Extract port
-	port := finalParsedURL.Port()
-	if port == "" {
-		if result.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
-	}
-	result.Port = port
-
-	// Extract title and count words/lines
-	bodyStr := string(initialBody)
-	result.Title = parser.ExtractTitle(bodyStr)
-	result.Words, result.Lines = parser.CountWordsAndLines(bodyStr)
-
-	// Resolve IP address
-	if p.ipTracker != nil {
-		ip := p.ipTracker.GetIP(result.Host)
-		if ip != "" {
-			result.IP = ip
-			result.HostIP = ip
-		}
-	}
-
-	// HSTS detection
-	if p.config.DetectHSTS && finalResp != nil {
-		if hstsHeader := finalResp.Header.Get("Strict-Transport-Security"); hstsHeader != "" {
-			result.HSTS = true
-			result.HSTSHeader = hstsHeader
-		}
-	}
-
-	// Technology detection
-	if p.techDetector != nil {
-		result.Technologies = p.techDetector.Detect(finalResp.Header, initialBody)
-	}
-
-	// CDN detection
-	if p.config.DetectCDN {
-		isCDN, cdnName := cdn.DetectCDN(finalResp.Header)
-		result.CDN = isCDN
-		result.CDNName = cdnName
-	}
-
-	// Domain discovery from certificate SANs/CN and CSP headers
-	if p.config.DiscoverDomains {
-		result.DiscoveredDomains = DiscoverDomains(resp.TLS, finalResp.Header, parsedURL.Hostname())
-	}
-
-	// Handle response storage and JSON output options
-	if p.config.IncludeResponseHeader {
-		result.ResponseHeaders = normalizeHeaders(finalResp.Header)
-		result.RequestHeaders = normalizeHeaders(req.Header)
-	}
-
-	if p.config.IncludeResponse {
-		result.RawRequest = rawRequestTLS
-		result.RawResponse = formatRawResponse(finalResp)
-	}
-
-	if p.config.StoreResponse {
-		// Build initial hop entry (first request/response before any redirects)
-		initialEntry := storage.ChainEntry{
-			RawRequest:  rawRequestTLS,
-			RawResponse: initialRawResponseTLS,
-			Body:        initialResponseBodyTLS,
-		}
-
-		// Build full chain: initial hop + redirect hops
-		fullChain := append([]storage.ChainEntry{initialEntry}, chainEntriesTLS...)
-
-		// If redirects occurred, update the last entry's body with the re-read final body
-		if len(chainEntriesTLS) > 0 {
-			fullChain[len(fullChain)-1].Body = initialBody
-		}
-
-		storedData := storage.FormatStoredResponse(fullChain, finalURL)
-		storagePath, err := storage.StoreResponse(p.config.StoreResponseDir, finalParsedURL, storedData)
-		if err != nil {
-			p.config.Logger.Warn("failed to store response",
-				"url", probeURL,
-				"error", err,
-			)
-		} else {
-			result.StoredResponsePath = storagePath
-			// Append to index.txt
-			storage.AppendToIndex(p.config.StoreResponseDir, storagePath, probeURL,
-				result.StatusCode, http.StatusText(result.StatusCode))
-		}
-	}
-
-	// Flush debug buffer atomically to stderr
-	p.flushDebugBuffer(&debugBuf)
-
+	p.processResponse(ctx, resp, state, &result)
 	return result
 }
 
@@ -1139,119 +932,6 @@ func getTLSVersionString(version uint16) string {
 		return "1.0"
 	default:
 		return fmt.Sprintf("0x%04x", version)
-	}
-}
-
-// followRedirectsWithClient follows redirects using a specific HTTP client.
-// Returns the final response, complete status code chain, host chain, per-hop ChainEntries, and any error.
-func (p *Prober) followRedirectsWithClient(ctx context.Context, initialResp *http.Response, maxRedirects int, startStep int, initialHostname string, buf *strings.Builder, httpClient *http.Client) (*http.Response, []int, []string, []storage.ChainEntry, error) {
-	statusChain := []int{initialResp.StatusCode}
-	hostChain := []string{initialHostname}
-	var chainEntries []storage.ChainEntry
-	currentResp := initialResp
-
-	if currentResp.StatusCode < 300 || currentResp.StatusCode >= 400 {
-		return currentResp, statusChain, hostChain, chainEntries, nil
-	}
-
-	redirectCount := 0
-	stepNum := startStep
-	for {
-		select {
-		case <-ctx.Done():
-			return currentResp, statusChain, hostChain, chainEntries, ctx.Err()
-		default:
-		}
-
-		if redirectCount >= maxRedirects {
-			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("stopped after %d redirects", maxRedirects)
-		}
-
-		location := currentResp.Header.Get("Location")
-		if location == "" {
-			return currentResp, statusChain, hostChain, chainEntries, nil
-		}
-
-		currentResp.Body.Close()
-
-		nextURL, err := currentResp.Request.URL.Parse(location)
-		if err != nil {
-			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("invalid redirect location: %v", err)
-		}
-
-		// Normalize port when scheme changes (e.g., http:80 -> https should use 443)
-		nextURL = normalizeRedirectURL(currentResp.Request.URL, nextURL)
-
-		nextHostname := nextURL.Hostname()
-
-		if p.config.SameHostOnly && nextHostname != initialHostname {
-			if p.config.Debug {
-				warning := fmt.Sprintf("  ⚠ Cross-host redirect blocked: %s → %s (same-host-only mode)\n", initialHostname, nextHostname)
-				if buf != nil {
-					buf.WriteString(warning)
-				}
-			}
-			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("cross-host redirect blocked: %s → %s", initialHostname, nextHostname)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "GET", nextURL.String(), nil)
-		if err != nil {
-			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("failed to create redirect request: %v", err)
-		}
-
-		req.Header = currentResp.Request.Header
-
-		// Capture raw request for storage before sending
-		var rawReq string
-		if p.config.StoreResponse {
-			rawReq = formatRawRequest(req)
-		}
-
-		stepNum++
-		p.debugRequest(req, stepNum, buf)
-		if p.config.Debug && nextHostname != initialHostname {
-			warning := fmt.Sprintf("  ⚠ Cross-host redirect: %s → %s\n", initialHostname, nextHostname)
-			if buf != nil {
-				buf.WriteString(warning)
-			}
-		}
-
-		requestStart := time.Now()
-		nextResp, err := httpClient.Do(req)
-		requestElapsed := time.Since(requestStart)
-		if err != nil {
-			return currentResp, statusChain, hostChain, chainEntries, fmt.Errorf("redirect request failed: %v", err)
-		}
-
-		// Always read body when storing responses or in debug mode
-		var nextBody []byte
-		if p.config.StoreResponse || p.config.Debug {
-			var bodyBuffer bytes.Buffer
-			bodyReader := io.TeeReader(nextResp.Body, &bodyBuffer)
-			nextBody, _ = io.ReadAll(io.LimitReader(bodyReader, p.config.MaxBodySize))
-			nextResp.Body.Close()
-			nextResp.Body = io.NopCloser(bytes.NewReader(nextBody))
-		}
-
-		// Build chain entry for storage
-		if p.config.StoreResponse {
-			chainEntries = append(chainEntries, storage.ChainEntry{
-				RawRequest:  rawReq,
-				RawResponse: formatRawResponse(nextResp),
-				Body:        nextBody,
-			})
-		}
-
-		p.debugResponse(nextResp, nextBody, requestElapsed, stepNum, buf)
-
-		statusChain = append(statusChain, nextResp.StatusCode)
-		hostChain = append(hostChain, nextHostname)
-		currentResp = nextResp
-		redirectCount++
-
-		if nextResp.StatusCode < 300 || nextResp.StatusCode >= 400 {
-			return nextResp, statusChain, hostChain, chainEntries, nil
-		}
 	}
 }
 
@@ -1431,11 +1111,14 @@ func normalizeHeaders(headers http.Header) map[string]string {
 // stripDefaultPort returns the URL string with the port removed when it matches
 // the scheme's default (80 for HTTP, 443 for HTTPS). This prevents Go's net/http
 // from sending "Host: example.com:443" which some servers reject.
+// The original *url.URL is not modified.
 func stripDefaultPort(u *url.URL) string {
 	port := u.Port()
 	if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
-		// Rebuild with just the hostname (no port)
-		u.Host = u.Hostname()
+		// Work on a shallow copy to avoid mutating the caller's URL
+		copy := *u
+		copy.Host = u.Hostname()
+		return copy.String()
 	}
 	return u.String()
 }

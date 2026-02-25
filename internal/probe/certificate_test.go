@@ -100,6 +100,10 @@ func TestExtractCertificateInfo_ValidCert(t *testing.T) {
 		t.Errorf("KeyAlgorithm = %q, want %q", info.KeyAlgorithm, "ECDSA")
 	}
 
+	if info.KeySize != 256 {
+		t.Errorf("KeySize = %d, want 256 (P-256 curve)", info.KeySize)
+	}
+
 	if info.Fingerprint == "" {
 		t.Error("expected non-empty fingerprint")
 	}

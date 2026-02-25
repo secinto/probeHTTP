@@ -59,7 +59,7 @@ func New() *Config {
 	return &Config{
 		FollowRedirects:    true,
 		MaxRedirects:       10,
-		Timeout:            30,
+		Timeout:            10,
 		Concurrency:        20,
 		Silent:             false,
 		Debug:              false,

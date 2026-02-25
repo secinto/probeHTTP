@@ -9,8 +9,10 @@ import (
 
 // ProcessURLs processes URLs concurrently using a worker pool with context support
 func (p *Prober) ProcessURLs(ctx context.Context, urls []string, originalInputMap map[string]string, concurrency int) <-chan output.ProbeResult {
-	results := make(chan output.ProbeResult, len(urls))
-	urlChan := make(chan string, len(urls))
+	// Use bounded buffers to avoid allocating O(n) memory for millions of URLs.
+	bufSize := concurrency * 2
+	results := make(chan output.ProbeResult, bufSize)
+	urlChan := make(chan string, bufSize)
 
 	// Create worker pool
 	var wg sync.WaitGroup

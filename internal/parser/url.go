@@ -204,11 +204,10 @@ func getPortsToTest(parsed ParsedURL, scheme string, ignorePorts bool, customPor
 	// Custom ports override everything
 	if customPorts != "" {
 		ports, err := ParsePortList(customPorts)
-		if err != nil {
-			// Fall back to default behavior on error
-		} else {
+		if err == nil {
 			return ports
 		}
+		// Invalid port spec — fall through to default behavior
 	}
 
 	// If IgnorePorts is set, use default common ports for the scheme

@@ -2,6 +2,9 @@ package probe
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -80,35 +83,19 @@ func isSelfSigned(cert *x509.Certificate) bool {
 
 // extractKeyInfo returns the public key algorithm name and key size in bits.
 func extractKeyInfo(cert *x509.Certificate) (algorithm string, size int) {
-	switch cert.PublicKeyAlgorithm {
-	case x509.RSA:
+	switch key := cert.PublicKey.(type) {
+	case *rsa.PublicKey:
 		algorithm = "RSA"
-	case x509.ECDSA:
+		size = key.Size() * 8
+	case *ecdsa.PublicKey:
 		algorithm = "ECDSA"
-	case x509.Ed25519:
+		size = key.Curve.Params().BitSize
+	case ed25519.PublicKey:
 		algorithm = "Ed25519"
+		size = 256
 	default:
 		algorithm = cert.PublicKeyAlgorithm.String()
 	}
-
-	// Extract key size from the public key
-	switch key := cert.PublicKey.(type) {
-	case interface{ Size() int }:
-		// RSA keys have Size() returning bytes
-		size = key.Size() * 8
-	case interface{ Params() interface{ BitSize() int } }:
-		size = key.Params().BitSize()
-	default:
-		// For ECDSA, use the curve bit size from the certificate
-		if cert.PublicKeyAlgorithm == x509.ECDSA {
-			if ecKey, ok := cert.PublicKey.(interface {
-				Params() *struct{ BitSize int }
-			}); ok {
-				_ = ecKey // fallback handled below
-			}
-		}
-	}
-
 	return algorithm, size
 }
 
