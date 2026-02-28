@@ -27,6 +27,45 @@ func withFlagSet(t *testing.T, args []string, testFn func()) {
 	testFn()
 }
 
+func TestParseFlags_ValidArgs(t *testing.T) {
+	withFlagSet(t, []string{"probehttp", "-c", "5", "-t", "3"}, func() {
+		cfg, err := ParseFlags()
+		if err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		if cfg.Concurrency != 5 {
+			t.Errorf("Concurrency = %d, want 5", cfg.Concurrency)
+		}
+		if cfg.Timeout != 3 {
+			t.Errorf("Timeout = %d, want 3", cfg.Timeout)
+		}
+	})
+}
+
+func TestParseFlags_MutuallyExclusiveUA(t *testing.T) {
+	withFlagSet(t, []string{"probehttp", "-ua", "custom", "-rua"}, func() {
+		_, err := ParseFlags()
+		if err == nil {
+			t.Fatal("expected error for -ua and -rua together")
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("error = %v, want 'mutually exclusive'", err)
+		}
+	})
+}
+
+func TestParseFlags_ExtractTLSChainImpliesExtractTLS(t *testing.T) {
+	withFlagSet(t, []string{"probehttp", "--extract-tls-chain"}, func() {
+		cfg, err := ParseFlags()
+		if err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		if !cfg.ExtractTLS {
+			t.Error("ExtractTLSChain should set ExtractTLS to true")
+		}
+	})
+}
+
 func TestParseFlags_InvalidConcurrency(t *testing.T) {
 	testCases := []struct {
 		name string

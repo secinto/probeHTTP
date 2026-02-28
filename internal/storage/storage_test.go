@@ -298,6 +298,9 @@ func TestSanitizeHost(t *testing.T) {
 		{"example.com:8080", "example.com_8080"},
 		{"sub.domain.com:443", "sub.domain.com_443"},
 		{"my-host.io", "my-host.io"},
+		{"host with spaces", "host_with_spaces"},
+		{"host@symbol.com", "host_symbol.com"},
+		{"UPPER.lower", "UPPER.lower"},
 	}
 
 	for _, tt := range tests {

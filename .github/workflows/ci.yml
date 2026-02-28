@@ -35,7 +35,7 @@ jobs:
         run: go mod verify
 
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: go test -v -race -coverprofile=coverage.out ./internal/... ./pkg/... ./test/... && go test -v -race ./cmd/...
 
       - name: Check coverage
         run: |

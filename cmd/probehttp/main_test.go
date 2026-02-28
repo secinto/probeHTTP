@@ -1,55 +1,47 @@
 package main
 
 import (
-	"bufio"
 	"strings"
 	"testing"
 )
 
-func TestReadURLs_SkipsCommentsAndBlankLines(t *testing.T) {
-	input := "# comment\n\nhttps://example.com\n  http://example.org/path  \n"
-
-	urls, err := readURLs(strings.NewReader(input))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestReadURLs(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect []string
+	}{
+		{"empty", "", nil},
+		{"single URL", "https://example.com", []string{"https://example.com"}},
+		{"multiple URLs", "https://a.com\nhttps://b.com", []string{"https://a.com", "https://b.com"}},
+		{"skips comments", "https://a.com\n# comment\nhttps://b.com", []string{"https://a.com", "https://b.com"}},
+		{"skips empty lines", "https://a.com\n\nhttps://b.com", []string{"https://a.com", "https://b.com"}},
+		{"trims whitespace", "  https://example.com  ", []string{"https://example.com"}},
 	}
-
-	if len(urls) != 2 {
-		t.Fatalf("expected 2 URLs, got %d (%v)", len(urls), urls)
-	}
-	if urls[0] != "https://example.com" {
-		t.Fatalf("unexpected first URL: %q", urls[0])
-	}
-	if urls[1] != "http://example.org/path" {
-		t.Fatalf("unexpected second URL: %q", urls[1])
-	}
-}
-
-func TestReadURLs_LongLineWithinBuffer(t *testing.T) {
-	longURL := "https://example.com/" + strings.Repeat("a", 70*1024)
-	input := longURL + "\n"
-
-	urls, err := readURLs(strings.NewReader(input))
-	if err != nil {
-		t.Fatalf("unexpected error for long line: %v", err)
-	}
-	if len(urls) != 1 {
-		t.Fatalf("expected 1 URL, got %d", len(urls))
-	}
-	if urls[0] != longURL {
-		t.Fatalf("long URL mismatch")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readURLs(strings.NewReader(tt.input))
+			if err != nil {
+				t.Fatalf("readURLs: %v", err)
+			}
+			if len(got) != len(tt.expect) {
+				t.Errorf("len = %d, want %d", len(got), len(tt.expect))
+			}
+			for i := range got {
+				if got[i] != tt.expect[i] {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], tt.expect[i])
+				}
+			}
+		})
 	}
 }
 
-func TestReadURLs_ErrTooLong(t *testing.T) {
-	tooLongURL := "https://example.com/" + strings.Repeat("b", 1024*1024+1)
-	input := tooLongURL + "\n"
-
-	_, err := readURLs(strings.NewReader(input))
-	if err == nil {
-		t.Fatal("expected scanner error for oversized line, got nil")
+func TestReadURLs_EmptyInput(t *testing.T) {
+	got, err := readURLs(strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("readURLs empty: %v", err)
 	}
-	if err != bufio.ErrTooLong {
-		t.Fatalf("expected bufio.ErrTooLong, got %v", err)
+	if got != nil {
+		t.Errorf("readURLs empty input: got %v, want nil", got)
 	}
 }

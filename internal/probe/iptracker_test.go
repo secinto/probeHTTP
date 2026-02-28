@@ -1,6 +1,13 @@
 package probe
 
-import "testing"
+import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+)
 
 func TestNewIPTracker(t *testing.T) {
 	tracker := NewIPTracker()
@@ -72,9 +79,55 @@ func TestIPTracker_ConcurrentAccess(t *testing.T) {
 
 func TestIPTracker_DialContextCreation(t *testing.T) {
 	tracker := NewIPTracker()
-	// DialContext returns a function, verify it's not nil
-	dialFn := tracker.DialContext(nil)
+	dialer := &net.Dialer{}
+	dialFn := tracker.DialContext(dialer)
 	if dialFn == nil {
 		t.Fatal("DialContext returned nil function")
+	}
+}
+
+func TestIPTracker_DialContext_RecordsIP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tracker := NewIPTracker()
+	dialer := &net.Dialer{}
+	dialFn := tracker.DialContext(dialer)
+
+	transport := &http.Transport{
+		DialContext: dialFn,
+	}
+	client := &http.Client{Transport: transport}
+	defer transport.CloseIdleConnections()
+
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", server.URL, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	resp.Body.Close()
+
+	// server.URL is like "http://127.0.0.1:12345". DialContext uses addr "127.0.0.1:12345"
+	// and stores by host "127.0.0.1" and "127.0.0.1:12345"
+	u, parseErr := url.Parse(server.URL)
+	if parseErr != nil {
+		t.Fatalf("url.Parse: %v", parseErr)
+	}
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	host := u.Hostname()
+	ip := tracker.GetIP(host)
+	if ip == "" {
+		ip = tracker.GetIP(u.Host)
+	}
+	if ip == "" {
+		t.Error("DialContext should have recorded IP after connection, GetIP returned empty")
+	}
+	// Should be 127.0.0.1 or ::1 for localhost
+	if ip != "127.0.0.1" && ip != "::1" {
+		t.Errorf("GetIP(%q) = %q, want 127.0.0.1 or ::1", host, ip)
 	}
 }
